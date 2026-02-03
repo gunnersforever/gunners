@@ -1,0 +1,11 @@
+The below libraries are required to be installed in order to run the project.py:
+
+# 1. yfinance
+# A library that manages the API calls to Yahoo! Finance for obtaining individual ticker details, including prices.
+# By using this library eliminates the additional cumbersome to manage and maintain sessions being active
+pip install yfinance
+
+
+# 2. pandas
+# A library that massages current datetime in Timestamp in a user-friendly format
+pip install pandas

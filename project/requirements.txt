@@ -1,11 +1,21 @@
 The below libraries are required to be installed in order to run the project.py:
 
-# 1. yfinance
-# A library that manages the API calls to Yahoo! Finance for obtaining individual ticker details, including prices.
-# By using this library eliminates the additional cumbersome to manage and maintain sessions being active
-pip install yfinance
-
-
-# 2. pandas
+# 1. pandas
 # A library that massages current datetime in Timestamp in a user-friendly format
 pip install pandas
+
+# 2. requests
+# A library for making HTTP requests to APIs
+pip install requests
+
+# 3. fastapi
+# A modern, fast web framework for building APIs with Python
+pip install fastapi
+
+# 4. uvicorn
+# ASGI server for running FastAPI applications
+pip install uvicorn
+
+# 5. python-multipart
+# For handling form data in FastAPI
+pip install python-multipart

@@ -38,6 +38,22 @@ PMT is a console-based application where users can interactively enter instructi
 ### How to run
 In a python-enabled command line, and in the ~/project directory, run the program by calling "python project.py".
 
+## Database migrations (Alembic) ⚠️
+
+We use SQLAlchemy + Alembic for schema migrations. Development convenience commands are available in the top-level `Makefile` (see root of repository).
+
+Quick steps:
+
+1. Install project dependencies: `pip install -r project/requirements.txt`
+2. Create the DB (for dev): `python -m project.init_db` (creates `gunners.db` by default)
+3. Create a new migration after model changes: `make db-revision MESSAGE="your message"`
+4. Apply migrations: `make db-upgrade`
+
+Notes:
+- Set a custom DB path with `DATABASE_URL` environment variable, e.g. `export DATABASE_URL="sqlite:////absolute/path/gunners.db"`.
+- For production use the native `bcrypt` package (see below) and install system libraries: `libffi-dev`, `build-essential` (Debian/Ubuntu). See the top of this README and `project/requirements.txt` for package hints.
+
+
 ## Code and functions
 
 ### retrieve_portfolio()

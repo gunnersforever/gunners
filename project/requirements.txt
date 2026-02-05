@@ -19,3 +19,24 @@ pip install uvicorn
 # 5. python-multipart
 # For handling form data in FastAPI
 pip install python-multipart
+
+# 6. SQLAlchemy
+# ORM for persistence
+pip install SQLAlchemy
+
+# 7. Alembic
+# Database migrations
+pip install alembic
+
+# 8. Passlib (bcrypt)
+# Secure password hashing
+pip install "passlib[bcrypt]"
+
+# Optional native bcrypt backend (recommended for production)
+# System deps: libffi-dev, build-essential
+pip install bcrypt
+
+# 9. Testing
+# pytest and test client
+pip install pytest
+pip install requests

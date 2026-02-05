@@ -1,5 +1,8 @@
+import os
+# Ensure tests use an in-memory database to avoid mixing with existing file DB
+os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
 from project import get_ticker_price, check_file_is_csv, write_portfolio, retrieve_portfolio
-import pandas, pytest, os
+import pandas, pytest
 
 
 def test_get_ticker_price_1():

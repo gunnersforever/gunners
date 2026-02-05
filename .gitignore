@@ -1,4 +1,13 @@
 __pycache__/
 *.py[cod]
+# Virtualenv
+.venv/
+# Local DB files and logs
+gunners.db
+project/gunners.db
+backend.log
+# Node modules
+node_modules/
+frontend/node_modules/
 # Ignore test CSVs generated during runtime
 Test*.csv

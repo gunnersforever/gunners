@@ -33,6 +33,15 @@ export DATABASE_URL='sqlite:///./dev.db'
 
 ```bash
 python -m project.init_db
+# or using the Makefile convenience:
+make init-db
+```
+
+- If you'd like the setup process to ensure the DB is initialized automatically, `make setup` now runs a short `ensure-db` step which will initialize the DB schema if missing. You can also run the check/init yourself with:
+
+```bash
+# idempotent: will create tables if they are missing
+make ensure-db
 ```
 
 - For production or to apply versioned schema changes, run Alembic migrations:
@@ -70,6 +79,32 @@ npm run dev
 
 The Vite dev server proxies `/api` to the backend. Make sure the backend is running (default: `http://localhost:8000`).
 
+Simplified start (Makefile) ✅
+For convenience, there are `Makefile` targets to setup and start the app during development.
+
+- Setup python venv and install dependencies:
+```bash
+make setup
+```
+
+- Start both backend and frontend (backend runs in background; frontend runs in foreground):
+```bash
+make dev
+```
+
+- Stop the background backend:
+```bash
+make dev-stop
+```
+
+- Run individually:
+```bash
+make start-backend
+make start-frontend
+```
+
+This provides a one-line way to start the full stack.
+
 ---
 
 ## Tests ✅
@@ -81,7 +116,12 @@ pytest -q
 
 Notes:
 - Tests use a temporary SQLite DB (`./test.db`) by default in this workspace to avoid in-memory connection isolation across threads. Remove it between test runs if you need a clean state.
+### Troubleshooting ⚠️
+- Python version: `make setup` now checks for **Python 3.10+** and will fail with a clear message if your `python` is older. If you see that message, install a newer Python and ensure `python` on your PATH points to the new version (or run `python3.10 -m venv .venv` manually before re-running `make setup`).
 
+- pip notice: during `make setup` you may see a message that a newer `pip` is available. The Makefile now upgrades `pip`, `setuptools`, and `wheel` in the virtualenv automatically.
+
+- Frontend npm peer dependency failures: some npm packages require specific peer versions of React. The Makefile uses `npm install --legacy-peer-deps` to avoid interactive peer-dep resolution failures during `make setup`/`make dev`. If you prefer to resolve peer deps yourself, install frontend deps with `cd frontend && npm install`.
 ---
 
 ## Authentication & Tokens 🔒

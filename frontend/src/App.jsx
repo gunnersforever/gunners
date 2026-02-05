@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 // NOTE: minor whitespace/comment to trigger reparse by Vite
 import { useTheme, useMediaQuery, Stack } from '@mui/material';
 import {
@@ -41,7 +41,12 @@ function App() {
   const [portfolio, setPortfolio] = useState([]);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [screen, setScreen] = useState('load');
+  // show login first (landing)
+  const [screen, setScreen] = useState('login');
+  // auth
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loggedInUser, setLoggedInUser] = useState('');
   const [action, setAction] = useState('buy');
   const [symbol, setSymbol] = useState('');
   const [quantity, setQuantity] = useState('');
@@ -65,19 +70,22 @@ function App() {
 
   useEffect(() => {
     if (screen === 'main') {
-      fetchPortfolio();
+      // use a small wrapper that calls the API helper
+      (async () => {
+        const { fetchPortfolioFromApi } = await import('./api');
+        const res = await fetchPortfolioFromApi();
+        setPortfolio(res.portfolio || []);
+        setError(res.error || '');
+      })();
     }
+    // load stored username
+    const u = (async () => {
+      try {
+        const { getUsername } = await import('./api');
+        setLoggedInUser(getUsername());
+      } catch (e) {}
+    })();
   }, [screen]);
-
-  const fetchPortfolio = async () => {
-    try {
-      const response = await fetch(`${API_BASE}/portfolio`);
-      const data = await response.json();
-      setPortfolio(data.portfolio);
-    } catch (err) {
-      setError('Failed to fetch portfolio');
-    }
-  };
 
   const handleShowSnackbar = (msg, severity = 'success') => {
     setSnackbarMessage(msg);
@@ -135,7 +143,7 @@ function App() {
       });
       const data = await response.json().catch(() => null);
       if (response.ok && data) {
-        setPortfolio(data.portfolio);
+        setPortfolio(data.portfolio || []);
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Portfolio loaded', 'success');
@@ -198,7 +206,8 @@ function App() {
       const endpoint = action === 'buy' ? 'buy' : 'sell';
       const payload = { symbol: symbol.toUpperCase(), quantity: parseInt(quantity) };
       console.log('Submitting', endpoint, payload);
-      const response = await fetch(`${API_BASE}/${endpoint}`, {
+      const { authFetch } = await import('./api');
+      const response = await authFetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -207,13 +216,19 @@ function App() {
       const data = await response.json().catch((e) => { console.error('Invalid JSON in response', e); return null; });
       console.log('Order data', data);
       if (response.ok && data) {
-        setPortfolio(data.portfolio);
+        setPortfolio(data.portfolio || []);
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Transaction completed', 'success');
         setSymbol('');
         setQuantity('');
         setPrice(null);
+      } else if (response.status === 401) {
+        const detail = data && data.detail ? data.detail : 'Authentication required';
+        setError(detail);
+        handleShowSnackbar(detail, 'error');
+        // suggest login
+        setScreen('load');
       } else {
         const detail = data && data.detail ? data.detail : `Server responded with ${response.status}`;
         console.error('Order error detail:', detail);
@@ -242,7 +257,8 @@ function App() {
     }
     setIsSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/portfolio/save`, {
+      const { authFetch } = await import('./api');
+      const response = await authFetch(`${API_BASE}/portfolio/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: saveFile }),
@@ -310,6 +326,54 @@ function App() {
     );
   }
 
+  if (screen === 'login') {
+    return (
+      <Container maxWidth="sm" sx={{ mt: 8 }}>
+        <Typography variant="h4" component="h1" gutterBottom align="center">
+          Portfolio Management Tool — Login
+        </Typography>
+        <Card>
+          <CardContent>
+            <Typography variant="h5" gutterBottom>
+              Sign in or Register
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+              <TextField label="Username" value={username} onChange={(e) => setUsername(e.target.value)} fullWidth />
+              <TextField label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} fullWidth />
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button variant="contained" onClick={async () => {
+                // login
+                if (!username || !password) { setError('Enter username and password'); return; }
+                const { loginUser } = await import('./api');
+                const res = await loginUser(username, password);
+                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Logged in'); setLoggedInUser(username); setScreen('load'); }
+              }}>
+                Login
+              </Button>
+              <Button variant="outlined" onClick={async () => {
+                // register then auto-login
+                if (!username || !password) { setError('Enter username and password'); return; }
+                const { registerUser, loginUser } = await import('./api');
+                const r = await registerUser(username, password);
+                if (!r.ok) { setError(r.error); return; }
+                const res = await loginUser(username, password);
+                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Registered and logged in'); setLoggedInUser(username); setScreen('load'); }
+              }}>
+                Register
+              </Button>
+            </Box>
+            <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
+              New users will have a default portfolio created automatically.
+            </Typography>
+          </CardContent>
+        </Card>
+        {message && <Alert severity="success" sx={{ mt: 2 }}>{message}</Alert>}
+        {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+      </Container>
+    );
+  }
+
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       <Typography variant="h4" component="h1" gutterBottom align="center">
@@ -325,7 +389,7 @@ function App() {
               <Typography variant="h5" gutterBottom>
                 Current Portfolio
               </Typography>
-              {portfolio.length === 0 ? (
+              {(!Array.isArray(portfolio) || portfolio.length === 0) ? (
                 <Typography>No holdings in portfolio</Typography>
               ) : isSmallScreen ? (
                 // Mobile — render each record in a single responsive row
@@ -385,6 +449,16 @@ function App() {
               <Typography variant="h5" gutterBottom>
                 Buy / Sell Stock
               </Typography>
+              {loggedInUser ? (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ display: 'inline-block', mr: 1 }}>Signed in as <strong>{loggedInUser}</strong></Typography>
+                  <Button size="small" onClick={async () => { const { logoutUser } = await import('./api'); await logoutUser(); setLoggedInUser(''); setMessage('Logged out'); setPortfolio([]); setScreen('login'); }} variant="outlined">Logout</Button>
+                </Box>
+              ) : (
+                <Box sx={{ mb: 2 }}>
+                  <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
+                </Box>
+              )}
               <ToggleButtonGroup
                 value={action}
                 exclusive

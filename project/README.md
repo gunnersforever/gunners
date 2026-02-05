@@ -51,7 +51,8 @@ Quick steps:
 
 Notes:
 - Set a custom DB path with `DATABASE_URL` environment variable, e.g. `export DATABASE_URL="sqlite:////absolute/path/gunners.db"`.
-- For production use the native `bcrypt` package (see below) and install system libraries: `libffi-dev`, `build-essential` (Debian/Ubuntu). See the top of this README and `project/requirements.txt` for package hints.
+- For production use the native `bcrypt` package and install system libraries: `libffi-dev`, `build-essential` (Debian/Ubuntu). See the top of this README and `project/requirements.txt` for package hints.
+- Auth & tokens: login returns `access_token` (short-lived, e.g. 15 minutes) and `refresh_token` (long-lived, e.g. 7 days). To refresh use `POST /token/refresh` with the refresh token in the `Authorization: Bearer <refresh-token>` header. The refresh endpoint rotates the refresh token and returns both a new `access_token` and `refresh_token`.
 
 
 ## Code and functions

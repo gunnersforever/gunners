@@ -1,42 +1,13 @@
-The below libraries are required to be installed in order to run the project.py:
+# Requirements for the backend (install with `pip install -r project/requirements.txt`)
 
-# 1. pandas
-# A library that massages current datetime in Timestamp in a user-friendly format
-pip install pandas
-
-# 2. requests
-# A library for making HTTP requests to APIs
-pip install requests
-
-# 3. fastapi
-# A modern, fast web framework for building APIs with Python
-pip install fastapi
-
-# 4. uvicorn
-# ASGI server for running FastAPI applications
-pip install uvicorn
-
-# 5. python-multipart
-# For handling form data in FastAPI
-pip install python-multipart
-
-# 6. SQLAlchemy
-# ORM for persistence
-pip install SQLAlchemy
-
-# 7. Alembic
-# Database migrations
-pip install alembic
-
-# 8. Passlib (bcrypt)
-# Secure password hashing
-pip install "passlib[bcrypt]"
-
-# Optional native bcrypt backend (recommended for production)
-# System deps: libffi-dev, build-essential
-pip install bcrypt
-
-# 9. Testing
-# pytest and test client
-pip install pytest
-pip install requests
+# Core packages
+pandas
+requests
+fastapi
+uvicorn
+python-multipart
+SQLAlchemy
+alembic
+passlib[bcrypt]
+bcrypt
+pytest

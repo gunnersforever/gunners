@@ -33,7 +33,36 @@ def write_portfolio(holdingslist, outfile):
                     fieldnames = ["ticker", "quantity", "totalcost", "lasttransactiondate"]
                     writer = csv.DictWriter(wfile, fieldnames=fieldnames)
                     writer.writeheader()
-                    writer.writerows(holdingslist)
+                    # normalize rows to expected fields
+                    norm_rows = []
+                    for r in holdingslist:
+                        rr = {}
+                        # ticker/symbol compatibility
+                        rr['ticker'] = r.get('ticker') or r.get('symbol') or ''
+                        rr['quantity'] = r.get('quantity') or r.get('qty') or ''
+                        # totalcost may come from totalcost or avgcost/curprice
+                        if 'totalcost' in r and r.get('totalcost') != '':
+                            rr['totalcost'] = r.get('totalcost')
+                        elif 'avgcost' in r and r.get('avgcost') != '' and rr['quantity']:
+                            try:
+                                rr['totalcost'] = str(round(float(rr['quantity']) * float(r.get('avgcost')), 2))
+                            except Exception:
+                                rr['totalcost'] = ''
+                        elif 'curprice' in r and r.get('curprice') != '' and rr['quantity']:
+                            try:
+                                rr['totalcost'] = str(round(float(rr['quantity']) * float(r.get('curprice')), 2))
+                            except Exception:
+                                rr['totalcost'] = ''
+                        else:
+                            rr['totalcost'] = r.get('totalcost','')
+                        rr['lasttransactiondate'] = r.get('lasttransactiondate','')
+                        norm_rows.append(rr)
+                    # sort by lasttransactiondate descending (newest first) if available
+                    try:
+                        sorted_rows = sorted(norm_rows, key=lambda r: pandas.to_datetime(r.get('lasttransactiondate')), reverse=True)
+                    except Exception:
+                        sorted_rows = norm_rows
+                    writer.writerows(sorted_rows)
                 count = len(holdingslist)
                 return f"Portfolio written successfully! Wrote {count} records to {outfile}"
     except FileNotFoundError:
@@ -45,30 +74,39 @@ def write_portfolio(holdingslist, outfile):
 # Sell a ticker from the current portfolio
 def sell_ticker(holdingslist, symbol, amt):
     try:
-        if not str(amt).isdigit():
+        # allow numeric strings like '1' or '1.0' and numeric types
+        try:
+            amt_float = float(amt)
+            if not float(amt_float).is_integer():
+                raise ValueError("Input quantity is not an integer!")
+            amt_int = int(amt_float)
+        except Exception:
             raise ValueError("Input quantity is not an integer!")
         tickerprice = get_ticker_price(symbol)
         if tickerprice is None:
             raise Exception(f"Unable to fetch current price for {symbol}")
-        # Assume proceed, no input
+        # Proceed
         rowdict = {}
         subtracted = False
         for i in range(len(holdingslist)):
             rowdict = holdingslist[i]
-            if symbol == rowdict["ticker"]:
-                existingqty = int(rowdict["quantity"])
-                if existingqty < int(amt):
-                    raise ValueError(f"Not enough holdings for {symbol}. Current holdings: {existingqty}; quantity to be sold: {amt}")
+            if symbol == rowdict.get("ticker"):
+                try:
+                    existingqty = int(float(rowdict.get("quantity", 0)))
+                except Exception:
+                    raise ValueError("Existing quantity is not a number")
+                if existingqty < amt_int:
+                    raise ValueError(f"Not enough holdings for {symbol}. Current holdings: {existingqty}; quantity to be sold: {amt_int}")
                 else:
-                    rowdict["quantity"] = existingqty - int(amt)
-                    rowdict["totalcost"] = round(float(rowdict["totalcost"]) - (int(amt) * tickerprice), 2)
+                    rowdict["quantity"] = existingqty - amt_int
+                    rowdict["totalcost"] = round(float(rowdict.get("totalcost", 0)) - (amt_int * tickerprice), 2)
                     # record UTC timestamp for the transaction
                     rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                     subtracted = True
                     break
         if not subtracted:
             raise Exception(f"No holdings for {symbol} in portfolio!")
-        return holdingslist, f"Transaction completed successfully! Sold {amt} shares of {symbol} at ${tickerprice} each."
+        return holdingslist, f"Transaction completed successfully! Sold {amt_int} shares of {symbol} at ${tickerprice} each."
     except Exception as e:
         raise e
 
@@ -76,19 +114,29 @@ def sell_ticker(holdingslist, symbol, amt):
 # Buy a ticker and add into the current portfolio
 def buy_ticker(holdingslist, symbol, amt):
     try:
-        if not str(amt).isdigit():
+        # allow numeric strings like '1' or '1.0' and numeric types
+        try:
+            amt_float = float(amt)
+            if not float(amt_float).is_integer():
+                raise ValueError("Input quantity is not an integer!")
+            amt_int = int(amt_float)
+        except Exception:
             raise ValueError("Input quantity is not an integer!")
         tickerprice = get_ticker_price(symbol)
         if tickerprice is None:
             raise Exception(f"Unable to fetch current price for {symbol}")
-        # Assume proceed
+        # Proceed
         rowdict = {}
         added = False
         for i in range(len(holdingslist)):
             rowdict = holdingslist[i]
-            if symbol == rowdict["ticker"]:
-                rowdict["quantity"] = int(rowdict["quantity"]) + int(amt)
-                rowdict["totalcost"] = round(float(rowdict["totalcost"]) + (int(amt) * tickerprice), 2)
+            if symbol == rowdict.get("ticker"):
+                try:
+                    existingqty = int(float(rowdict.get("quantity", 0)))
+                except Exception:
+                    raise ValueError("Existing quantity is not a number")
+                rowdict["quantity"] = existingqty + amt_int
+                rowdict["totalcost"] = round(float(rowdict.get("totalcost", 0)) + (amt_int * tickerprice), 2)
                 # record UTC timestamp for the transaction
                 rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                 added = True
@@ -96,9 +144,9 @@ def buy_ticker(holdingslist, symbol, amt):
         if not added:
             # use UTC ISO timestamp for transaction time
             utcnow = pandas.Timestamp.now(tz='UTC').isoformat()
-            rowdict = {"ticker": symbol, "quantity": amt, "totalcost": round((int(amt) * tickerprice), 2), "lasttransactiondate": utcnow}
+            rowdict = {"ticker": symbol, "quantity": amt_int, "totalcost": round((amt_int * tickerprice), 2), "lasttransactiondate": utcnow}
             holdingslist.append(rowdict)
-        return holdingslist, f"Transaction completed successfully! Bought {amt} shares of {symbol} at ${tickerprice} each."
+        return holdingslist, f"Transaction completed successfully! Bought {amt_int} shares of {symbol} at ${tickerprice} each."
     except Exception as e:
         raise e
 

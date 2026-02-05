@@ -59,10 +59,11 @@ def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password, hashed)
 
 def require_auth(authorization: str = Header(None), db: Session = Depends(get_db)) -> str:
+    """Require an access token (short-lived)."""
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(status_code=401, detail='Authorization required')
     token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token).first()
+    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'access').first()
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired token')
     if st.expires_at and st.expires_at < datetime.datetime.utcnow():
@@ -75,13 +76,19 @@ def require_auth(authorization: str = Header(None), db: Session = Depends(get_db
         raise HTTPException(status_code=401, detail='User not found')
     return user.username
 
+from sqlalchemy.exc import OperationalError
+
 @app.post('/register')
 def register(data: dict, db: Session = Depends(get_db)):
     username = data.get('username')
     password = data.get('password')
     if not username or not password:
         raise HTTPException(status_code=400, detail='Username and password required')
-    existing = db.query(models.User).filter(models.User.username == username).first()
+    try:
+        existing = db.query(models.User).filter(models.User.username == username).first()
+    except OperationalError as e:
+        logging.error('Database error during register: %s', e)
+        raise HTTPException(status_code=503, detail='Database not initialized. Run `make init-db` or `alembic upgrade head`')
     if existing:
         # If the existing user has the same password, treat register as idempotent and reset user state (useful for tests/dev).
         if verify_password(password, existing.password_hash):
@@ -117,36 +124,57 @@ def login(data: dict, db: Session = Depends(get_db)):
     password = data.get('password')
     if not username or not password:
         raise HTTPException(status_code=400, detail='Username and password required')
-    user = db.query(models.User).filter(models.User.username == username).first()
+    try:
+        user = db.query(models.User).filter(models.User.username == username).first()
+    except OperationalError as e:
+        logging.error('Database error during login: %s', e)
+        raise HTTPException(status_code=503, detail='Database not initialized. Run `make init-db` or `alembic upgrade head`')
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail='Invalid credentials')
-    token = uuid.uuid4().hex
-    expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
-    st = models.SessionToken(token=token, user_id=user.id, expires_at=expires)
-    db.add(st)
+    # issue access and refresh tokens
+    access_token = uuid.uuid4().hex
+    refresh_token = uuid.uuid4().hex
+    access_expires = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)  # short-lived access token
+    refresh_expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)  # long-lived refresh token
+    st_access = models.SessionToken(token=access_token, user_id=user.id, token_type='access', expires_at=access_expires, created_at=datetime.datetime.utcnow())
+    st_refresh = models.SessionToken(token=refresh_token, user_id=user.id, token_type='refresh', expires_at=refresh_expires, created_at=datetime.datetime.utcnow())
+    db.add(st_access)
+    db.add(st_refresh)
     db.commit()
     portfolios = [p.name for p in user.portfolios]
     logging.info('User logged in: %s', username)
-    return {'token': token, 'expires_at': expires.isoformat(), 'portfolios': portfolios, 'active': user.active_portfolio or 'default'}
+    return {'access_token': access_token, 'access_expires_at': access_expires.isoformat(), 'refresh_token': refresh_token, 'refresh_expires_at': refresh_expires.isoformat(), 'portfolios': portfolios, 'active': user.active_portfolio or 'default'}
 
 
 @app.post('/token/refresh')
 def refresh_token(authorization: str = Header(None), db: Session = Depends(get_db)):
+    """Accept a refresh token in Authorization header and issue a new access token.
+    We rotate the refresh token as well (delete old refresh token and create a new one).
+    Return both `access_token` and `refresh_token` (rotated) with expiries.
+    """
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(status_code=401, detail='Authorization required')
     token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token).first()
+    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'refresh').first()
     if not st:
-        raise HTTPException(status_code=401, detail='Invalid or expired token')
-    # rotate: create new token and remove old one
-    new_token = uuid.uuid4().hex
-    expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
-    new_st = models.SessionToken(token=new_token, user_id=st.user_id, expires_at=expires)
-    db.add(new_st)
+        raise HTTPException(status_code=401, detail='Invalid or expired refresh token')
+    if st.expires_at and st.expires_at < datetime.datetime.utcnow():
+        db.delete(st)
+        db.commit()
+        raise HTTPException(status_code=401, detail='Refresh token expired')
+    # create new access token and rotate refresh token
+    new_access = uuid.uuid4().hex
+    new_refresh = uuid.uuid4().hex
+    access_expires = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
+    refresh_expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
+    st_access = models.SessionToken(token=new_access, user_id=st.user_id, token_type='access', expires_at=access_expires, created_at=datetime.datetime.utcnow())
+    st_refresh = models.SessionToken(token=new_refresh, user_id=st.user_id, token_type='refresh', expires_at=refresh_expires, created_at=datetime.datetime.utcnow())
+    db.add(st_access)
+    db.add(st_refresh)
     db.delete(st)
     db.commit()
-    logging.info('Rotated token for user_id %s', new_st.user_id)
-    return {'token': new_token, 'expires_at': expires.isoformat()}
+    logging.info('Rotated refresh token for user_id %s', st.user_id)
+    return {'access_token': new_access, 'access_expires_at': access_expires.isoformat(), 'refresh_token': new_refresh, 'refresh_expires_at': refresh_expires.isoformat()}
 
 
 @app.post('/logout')

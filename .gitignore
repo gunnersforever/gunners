@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+# Ignore test CSVs generated during runtime
+Test*.csv

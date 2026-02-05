@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import csv
 import io
 import os
@@ -52,8 +53,10 @@ def save_portfolio(data: dict):
     full_path = os.path.join(os.path.dirname(__file__), filename)
     logging.info("Saving to: %s", full_path)
     try:
+        logging.info("Saving portfolio with %d records", len(holdingslist))
         message = write_portfolio(holdingslist, full_path)
-        return {"message": message}
+        logging.info("Save result: %s", message)
+        return {"message": message, "saved_count": len(holdingslist)}
     except Exception as e:
         logging.error("Save error: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -91,7 +94,19 @@ def sell(data: dict):
         raise HTTPException(status_code=400, detail="Symbol and quantity required")
     try:
         holdingslist, message = sell_ticker(holdingslist, symbol, str(quantity))
+        logging.info("Sell completed: %s", message)
         return {"message": message, "portfolio": holdingslist}
     except Exception as e:
         logging.error("Sell error: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/portfolio/file/{filename}")
+def get_portfolio_file(filename: str):
+    # Basic validation to avoid directory traversal
+    if '..' in filename or '/' in filename or '\\' in filename or not filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    full_path = os.path.join(os.path.dirname(__file__), filename)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(full_path, media_type='text/csv', filename=filename)

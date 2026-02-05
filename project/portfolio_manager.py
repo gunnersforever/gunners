@@ -34,7 +34,8 @@ def write_portfolio(holdingslist, outfile):
                     writer = csv.DictWriter(wfile, fieldnames=fieldnames)
                     writer.writeheader()
                     writer.writerows(holdingslist)
-                return "Portfolio written successfully!"
+                count = len(holdingslist)
+                return f"Portfolio written successfully! Wrote {count} records to {outfile}"
     except FileNotFoundError:
         raise FileNotFoundError("Output file not found")
     except OSError:
@@ -61,6 +62,8 @@ def sell_ticker(holdingslist, symbol, amt):
                 else:
                     rowdict["quantity"] = existingqty - int(amt)
                     rowdict["totalcost"] = round(float(rowdict["totalcost"]) - (int(amt) * tickerprice), 2)
+                    # record UTC timestamp for the transaction
+                    rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                     subtracted = True
                     break
         if not subtracted:
@@ -86,10 +89,14 @@ def buy_ticker(holdingslist, symbol, amt):
             if symbol == rowdict["ticker"]:
                 rowdict["quantity"] = int(rowdict["quantity"]) + int(amt)
                 rowdict["totalcost"] = round(float(rowdict["totalcost"]) + (int(amt) * tickerprice), 2)
+                # record UTC timestamp for the transaction
+                rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                 added = True
                 break
         if not added:
-            rowdict = {"ticker": symbol, "quantity": amt, "totalcost": round((int(amt) * tickerprice), 2), "lasttransactiondate": pandas.to_datetime("today").isoformat()}
+            # use UTC ISO timestamp for transaction time
+            utcnow = pandas.Timestamp.now(tz='UTC').isoformat()
+            rowdict = {"ticker": symbol, "quantity": amt, "totalcost": round((int(amt) * tickerprice), 2), "lasttransactiondate": utcnow}
             holdingslist.append(rowdict)
         return holdingslist, f"Transaction completed successfully! Bought {amt} shares of {symbol} at ${tickerprice} each."
     except Exception as e:

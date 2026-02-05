@@ -21,10 +21,11 @@ This is the React frontend for the Portfolio Management Tool, built with Vite an
 
 ## Running the Application
 
-1. Start the development server:
+1. Start the development server for frontend (vite) app:
    ```
    npm run dev
    ```
+   # for debug mode:  DEBUG=vite:* npm run dev
 
 2. Open your browser and go to `http://localhost:5173`
 

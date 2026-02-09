@@ -6,6 +6,11 @@ __pycache__/
 gunners.db
 project/gunners.db
 backend.log
+frontend.log
+test.db
+pytest_01.csv
+project/testuser_out_test.csv
+project/timmy_timmy_test01.csv
 # Node modules
 node_modules/
 frontend/node_modules/

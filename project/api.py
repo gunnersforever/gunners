@@ -249,6 +249,24 @@ def get_portfolio(name: str = None, username: str = Depends(require_auth), db: S
     return {'portfolio': sorted_port, 'name': pname}
 
 
+@app.post('/portfolio/reset')
+def reset_portfolio(username: str = Depends(require_auth), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    pname = user.active_portfolio or 'default'
+    portfolio = next((p for p in user.portfolios if p.name == pname), None)
+    if portfolio is None:
+        portfolio = models.Portfolio(name=pname, user_id=user.id)
+        db.add(portfolio)
+        db.commit()
+        db.refresh(portfolio)
+    db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
+    db.commit()
+    logging.info('Reset portfolio %s for user %s', pname, username)
+    return {'message': 'Started new portfolio', 'portfolio': [], 'name': pname}
+
+
 @app.post("/portfolio/load")
 def load_portfolio(file: UploadFile = File(...), name: str = None, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     logging.info("Load request: %s for user %s", file.filename, username)
@@ -330,7 +348,22 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
-            h = models.Holding(portfolio_id=portfolio.id, symbol=sym, quantity=float(r.get('quantity') or 0), avgcost=float(r.get('avgcost') or 0) if r.get('avgcost') else None, curprice=float(r.get('curprice') or 0) if r.get('curprice') else None, lasttransactiondate=r.get('lasttransactiondate',''), raw=str(r))
+            qty_val = float(r.get('quantity') or 0)
+            totalcost_val = r.get('totalcost')
+            avgcost_val = r.get('avgcost')
+            if (avgcost_val is None or avgcost_val == '') and qty_val:
+                if totalcost_val not in (None, ''):
+                    avgcost_val = float(totalcost_val) / qty_val
+            r['avgcost'] = avgcost_val if avgcost_val is not None else r.get('avgcost', '')
+            h = models.Holding(
+                portfolio_id=portfolio.id,
+                symbol=sym,
+                quantity=qty_val,
+                avgcost=float(avgcost_val) if avgcost_val not in (None, '') else None,
+                curprice=float(r.get('curprice') or 0) if r.get('curprice') else None,
+                lasttransactiondate=r.get('lasttransactiondate',''),
+                raw=str(r),
+            )
             db.add(h)
         db.commit()
         # ensure response uses 'symbol' key (legacy clients/tests expect this)
@@ -371,7 +404,22 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
-            h = models.Holding(portfolio_id=portfolio.id, symbol=sym, quantity=float(r.get('quantity') or 0), avgcost=float(r.get('avgcost') or 0) if r.get('avgcost') else None, curprice=float(r.get('curprice') or 0) if r.get('curprice') else None, lasttransactiondate=r.get('lasttransactiondate',''), raw=str(r))
+            qty_val = float(r.get('quantity') or 0)
+            totalcost_val = r.get('totalcost')
+            avgcost_val = r.get('avgcost')
+            if (avgcost_val is None or avgcost_val == '') and qty_val:
+                if totalcost_val not in (None, ''):
+                    avgcost_val = float(totalcost_val) / qty_val
+            r['avgcost'] = avgcost_val if avgcost_val is not None else r.get('avgcost', '')
+            h = models.Holding(
+                portfolio_id=portfolio.id,
+                symbol=sym,
+                quantity=qty_val,
+                avgcost=float(avgcost_val) if avgcost_val not in (None, '') else None,
+                curprice=float(r.get('curprice') or 0) if r.get('curprice') else None,
+                lasttransactiondate=r.get('lasttransactiondate',''),
+                raw=str(r),
+            )
             db.add(h)
         db.commit()
         for r in new_rows:

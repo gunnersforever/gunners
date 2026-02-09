@@ -2,6 +2,8 @@
 In production use Alembic migrations instead.
 """
 from .db import engine, Base
+# Ensure models are imported so Base.metadata is populated.
+from . import models  # noqa: F401
 
 def init_db():
     Base.metadata.create_all(bind=engine)

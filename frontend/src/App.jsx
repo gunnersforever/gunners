@@ -69,14 +69,8 @@ function App() {
   const isSmallScreen = useMediaQuery(theme.breakpoints.down('sm'));
 
   useEffect(() => {
-    if (screen === 'main') {
-      // use a small wrapper that calls the API helper
-      (async () => {
-        const { fetchPortfolioFromApi } = await import('./api');
-        const res = await fetchPortfolioFromApi();
-        setPortfolio(res.portfolio || []);
-        setError(res.error || '');
-      })();
+    if (screen === 'load') {
+      setPortfolio([]);
     }
     // load stored username
     const u = (async () => {
@@ -96,6 +90,31 @@ function App() {
   const handleCloseSnackbar = (_, reason) => {
     if (reason === 'clickaway') return;
     setSnackbarOpen(false);
+  };
+
+  const normalizePortfolioRows = (rows) => {
+    if (!Array.isArray(rows)) return [];
+    return rows.map((row) => {
+      const ticker = row.ticker || row.symbol || '';
+      const quantityValue = row.quantity !== undefined ? row.quantity : '';
+      const avgCostValue = row.avgcost !== undefined ? row.avgcost : row.avgCost;
+      const totalCostRaw = row.totalcost !== undefined ? row.totalcost : null;
+      const numericQty = Number(quantityValue);
+      const numericAvg = Number(avgCostValue);
+      let totalcost = '';
+      if (totalCostRaw !== null && totalCostRaw !== undefined && totalCostRaw !== '') {
+        const numericTotal = Number(totalCostRaw);
+        totalcost = Number.isFinite(numericTotal) ? numericTotal.toFixed(2) : String(totalCostRaw);
+      } else if (Number.isFinite(numericQty) && Number.isFinite(numericAvg)) {
+        totalcost = (numericQty * numericAvg).toFixed(2);
+      }
+      return {
+        ...row,
+        ticker,
+        quantity: quantityValue,
+        totalcost,
+      };
+    });
   };
 
   // Format an ISO UTC timestamp string into the user's local timezone in the
@@ -132,6 +151,7 @@ function App() {
   const handleFileLoad = async (event) => { 
     const file = event.target.files[0];
     if (!file) return;
+    setPortfolio([]);
     const formData = new FormData();
     formData.append('file', file);
     setIsLoadingFile(true);
@@ -143,7 +163,7 @@ function App() {
       });
       const data = await response.json().catch(() => null);
       if (response.ok && data) {
-        setPortfolio(data.portfolio || []);
+        setPortfolio(normalizePortfolioRows(data.portfolio || []));
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Portfolio loaded', 'success');
@@ -162,11 +182,37 @@ function App() {
     }
   }; 
 
-  const handleNewPortfolio = () => {
+  const handleNewPortfolio = async () => {
     setPortfolio([]);
-    setScreen('main');
-    setMessage('Started new portfolio');
-    handleShowSnackbar('Started new portfolio', 'info');
+    setSavedFileUrl('');
+    setSaveFile('');
+    setSymbol('');
+    setQuantity('');
+    setPrice(null);
+    setError('');
+    setMessage('');
+    try {
+      const { authFetch } = await import('./api');
+      const response = await authFetch(`${API_BASE}/portfolio/reset`, { method: 'POST' });
+      const data = await response.json().catch(() => null);
+      if (response.ok) {
+        setMessage(data && data.message ? data.message : 'Started new portfolio');
+        handleShowSnackbar(data && data.message ? data.message : 'Started new portfolio', 'info');
+        setScreen('main');
+      } else {
+        const detail = data && data.detail ? data.detail : `Server error ${response.status}`;
+        if (response.status === 401) {
+          setError(detail);
+          handleShowSnackbar(detail, 'error');
+        } else {
+          setError('');
+        }
+        setScreen('main');
+      }
+    } catch (err) {
+      setError('');
+      setScreen('main');
+    }
   };
 
   const handleProceed = async () => {
@@ -216,7 +262,7 @@ function App() {
       const data = await response.json().catch((e) => { console.error('Invalid JSON in response', e); return null; });
       console.log('Order data', data);
       if (response.ok && data) {
-        setPortfolio(data.portfolio || []);
+        setPortfolio(normalizePortfolioRows(data.portfolio || []));
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Transaction completed', 'success');
@@ -255,32 +301,48 @@ function App() {
       handleShowSnackbar('Please enter a filename to save', 'error');
       return;
     }
+    if (!Array.isArray(portfolio) || portfolio.length === 0) {
+      setError('No holdings to save');
+      handleShowSnackbar('No holdings to save', 'error');
+      return;
+    }
     setIsSaving(true);
     try {
-      const { authFetch } = await import('./api');
-      const response = await authFetch(`${API_BASE}/portfolio/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: saveFile }),
+      const safeName = saveFile.toLowerCase().endsWith('.csv') ? saveFile : `${saveFile}.csv`;
+      const headers = ['symbol', 'quantity', 'avgcost', 'curprice', 'lasttransactiondate'];
+      const rows = portfolio.map((row) => {
+        const symbol = row.symbol || row.ticker || '';
+        const quantity = row.quantity ?? '';
+        const avgcost = row.avgcost ?? '';
+        const curprice = row.curprice ?? '';
+        const lasttransactiondate = row.lasttransactiondate ?? '';
+        return [symbol, quantity, avgcost, curprice, lasttransactiondate];
       });
-      const data = await response.json().catch(() => null);
-      if (response.ok && data) {
-        setMessage(data.message);
-        setError('');
-        const count = data.saved_count || (data.message && data.message.match(/Wrote (\d+) records/)? parseInt(data.message.match(/Wrote (\d+) records/)[1],10) : null);
-        if (count !== null) {
-          handleShowSnackbar(`${data.message} (${count} records)`, 'success');
-        } else {
-          handleShowSnackbar(data.message || 'Saved', 'success');
-        }
-        // build a download URL for the file we just saved (works in dev with proxy)
-        setSavedFileUrl(`/api/portfolio/file/${encodeURIComponent(saveFile)}`);
-      } else {
-        const detail = data && data.detail ? data.detail : `Server error ${response.status}`;
-        setError(detail);
-        handleShowSnackbar(detail, 'error');
-        setSavedFileUrl('');
-      }
+      const csvLines = [headers.join(',')].concat(
+        rows.map((cols) => cols.map((value) => {
+          const text = String(value ?? '');
+          if (text.includes('"')) {
+            return `"${text.replace(/"/g, '""')}"`;
+          }
+          if (text.includes(',') || text.includes('\n')) {
+            return `"${text}"`;
+          }
+          return text;
+        }).join(','))
+      );
+      const blob = new Blob([csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = safeName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMessage(`Prepared ${safeName}`);
+      setError('');
+      handleShowSnackbar('Download started', 'success');
+      setSavedFileUrl('');
     } catch (err) {
       console.error('Save error', err);
       setError('Failed to save portfolio');
@@ -290,9 +352,34 @@ function App() {
     }
   }; 
 
+  const handleLogout = async () => {
+    const { logoutUser } = await import('./api');
+    await logoutUser();
+    setLoggedInUser('');
+    setPortfolio([]);
+    setMessage('Logged out');
+    setError('');
+    setSavedFileUrl('');
+    setSaveFile('');
+    setSymbol('');
+    setQuantity('');
+    setPrice(null);
+    setScreen('login');
+  };
+
   if (screen === 'load') {
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+          {loggedInUser ? (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
+              <Button size="small" variant="outlined" onClick={handleLogout}>Logout</Button>
+            </Box>
+          ) : (
+            <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
+          )}
+        </Box>
         <Typography variant="h4" component="h1" gutterBottom align="center">
           Portfolio Management Tool
         </Typography>
@@ -347,7 +434,7 @@ function App() {
                 if (!username || !password) { setError('Enter username and password'); return; }
                 const { loginUser } = await import('./api');
                 const res = await loginUser(username, password);
-                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Logged in'); setLoggedInUser(username); setScreen('load'); }
+                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Logged in'); setLoggedInUser(username); setPortfolio([]); setSavedFileUrl(''); setSaveFile(''); setSymbol(''); setQuantity(''); setPrice(null); setScreen('load'); }
               }}>
                 Login
               </Button>
@@ -358,7 +445,7 @@ function App() {
                 const r = await registerUser(username, password);
                 if (!r.ok) { setError(r.error); return; }
                 const res = await loginUser(username, password);
-                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Registered and logged in'); setLoggedInUser(username); setScreen('load'); }
+                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Registered and logged in'); setLoggedInUser(username); setPortfolio([]); setSavedFileUrl(''); setSaveFile(''); setSymbol(''); setQuantity(''); setPrice(null); setScreen('load'); }
               }}>
                 Register
               </Button>
@@ -376,6 +463,16 @@ function App() {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+        {loggedInUser ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
+            <Button size="small" variant="outlined" onClick={handleLogout}>Logout</Button>
+          </Box>
+        ) : (
+          <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
+        )}
+      </Box>
       <Typography variant="h4" component="h1" gutterBottom align="center">
         Portfolio Management Tool
       </Typography>
@@ -449,16 +546,6 @@ function App() {
               <Typography variant="h5" gutterBottom>
                 Buy / Sell Stock
               </Typography>
-              {loggedInUser ? (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="body2" sx={{ display: 'inline-block', mr: 1 }}>Signed in as <strong>{loggedInUser}</strong></Typography>
-                  <Button size="small" onClick={async () => { const { logoutUser } = await import('./api'); await logoutUser(); setLoggedInUser(''); setMessage('Logged out'); setPortfolio([]); setScreen('login'); }} variant="outlined">Logout</Button>
-                </Box>
-              ) : (
-                <Box sx={{ mb: 2 }}>
-                  <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
-                </Box>
-              )}
               <ToggleButtonGroup
                 value={action}
                 exclusive

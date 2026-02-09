@@ -12,6 +12,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            const auth = req.headers && req.headers.authorization;
+            if (auth) {
+              proxyReq.setHeader('authorization', auth);
+            }
+          });
+        },
       },
     },
   },

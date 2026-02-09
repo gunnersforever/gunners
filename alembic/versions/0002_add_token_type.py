@@ -15,9 +15,15 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column('session_tokens', sa.Column('token_type', sa.String(), nullable=False, server_default='access'))
-    op.add_column('session_tokens', sa.Column('created_at', sa.DateTime(), nullable=True))
-    op.alter_column('session_tokens', 'token_type', server_default=None)
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    cols = {col['name'] for col in inspector.get_columns('session_tokens')}
+    if 'token_type' not in cols:
+        op.add_column('session_tokens', sa.Column('token_type', sa.String(), nullable=False, server_default='access'))
+    if 'created_at' not in cols:
+        op.add_column('session_tokens', sa.Column('created_at', sa.DateTime(), nullable=True))
+    if bind.dialect.name != 'sqlite':
+        op.alter_column('session_tokens', 'token_type', server_default=None)
 
 
 def downgrade():

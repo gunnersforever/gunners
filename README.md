@@ -107,6 +107,35 @@ This provides a one-line way to start the full stack.
 
 ---
 
+## Production run (basic) 🧱
+Use the Makefile targets below to run without auto-reload and with explicit host/port settings.
+
+1. Ensure DB schema exists and migrations are applied:
+
+```bash
+make ensure-db
+make db-upgrade
+```
+
+2. Start backend (no reload):
+
+```bash
+make start-backend-prod
+```
+
+3. Build and serve frontend (for a quick prod smoke test):
+
+```bash
+make build-frontend
+make preview-frontend
+```
+
+Notes:
+- Override ports/host as needed: `HOST=0.0.0.0 PORT=8000 FRONTEND_PORT=5173 make start-backend-prod`.
+- `preview-frontend` uses Vite preview for a quick check; for real production, serve `frontend/dist` with a static web server.
+
+---
+
 ## Tests ✅
 Run the test suite:
 

@@ -1,5 +1,8 @@
 # Makefile convenience targets for DB migrations and dev
 DBURL ?= sqlite:///./project/gunners.db
+HOST ?= 0.0.0.0
+PORT ?= 8000
+FRONTEND_PORT ?= 5173
 
 .PHONY: db-upgrade db-downgrade db-revision db-head init-db ensure-db
 
@@ -27,18 +30,27 @@ ensure-db:
 # -----------------------------
 # Development / startup targets
 # -----------------------------
-.PHONY: start-backend start-frontend dev dev-stop setup
+.PHONY: start-backend start-backend-prod start-frontend build-frontend preview-frontend dev dev-stop setup
 
 start-backend:
-	DATABASE_URL=$(DBURL) uvicorn project.api:app --reload --host 0.0.0.0 --port 8000
+	DATABASE_URL=$(DBURL) uvicorn project.api:app --reload --host $(HOST) --port $(PORT)
+
+start-backend-prod:
+	DATABASE_URL=$(DBURL) uvicorn project.api:app --host $(HOST) --port $(PORT)
 
 start-frontend:
-	cd frontend && npm install --legacy-peer-deps && npm run dev
+	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT)
+
+build-frontend:
+	cd frontend && npm install --legacy-peer-deps && npm run build
+
+preview-frontend:
+	cd frontend && npm run preview -- --host $(HOST) --port $(FRONTEND_PORT)
 
 dev:
 	@echo "Starting backend (background) and frontend (foreground)..."
-	@DATABASE_URL=$(DBURL) nohup uvicorn project.api:app --reload --host 0.0.0.0 --port 8000 > backend.log 2>&1 & \
-	cd frontend && npm install --legacy-peer-deps && npm run dev
+	@DATABASE_URL=$(DBURL) nohup uvicorn project.api:app --reload --host $(HOST) --port $(PORT) > backend.log 2>&1 & \
+	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT)
 
 dev-stop:
 	-@echo "Stopping backend uvicorn (if running)..."

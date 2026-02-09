@@ -44,6 +44,15 @@ npm run build
 
 The built files will be in the `dist` directory. You can serve them using any static file server.
 
+Quick prod smoke test with Vite preview:
+```
+npm run preview -- --host 0.0.0.0 --port 5173
+```
+
+Makefile shortcuts from the repo root:
+- `make build-frontend`
+- `make preview-frontend`
+
 ## Features
 
 - **Responsive Design**: Works seamlessly on mobile and desktop devices

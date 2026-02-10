@@ -192,5 +192,3 @@ Authorization: Bearer <access_token>
 - To reset the DB quickly during development: stop the server, remove `gunners.db`, and re-run `python -m project.init_db` or use migrations.
 
 ---
-
-If you'd like, I can add a `conftest.py` to centralize test DB setup/teardown or convert tests to use per-test temporary DB files. 🔧

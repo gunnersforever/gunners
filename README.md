@@ -1,6 +1,3 @@
-# gunners
-GTG - Get Things Going
-
 ## Overview ✨
 Simple portfolio management backend (FastAPI) + frontend (Vite/React). Includes database-backed user accounts, access/refresh token authentication, and Alembic migrations for schema changes.
 
@@ -133,6 +130,16 @@ make preview-frontend
 Notes:
 - Override ports/host as needed: `HOST=0.0.0.0 PORT=8000 FRONTEND_PORT=5173 make start-backend-prod`.
 - `preview-frontend` uses Vite preview for a quick check; for real production, serve `frontend/dist` with a static web server.
+- The frontend expects the backend at the same origin under `/api` in production. Configure your reverse proxy to route `/api` to the backend.
+
+Example Nginx snippet:
+```nginx
+location /api/ {
+  proxy_pass http://127.0.0.1:8000/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+}
+```
 
 ---
 

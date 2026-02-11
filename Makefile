@@ -39,7 +39,7 @@ start-backend-prod:
 	DATABASE_URL=$(DBURL) uvicorn project.api:app --host $(HOST) --port $(PORT)
 
 start-frontend:
-	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT)
+	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT) < /dev/null
 
 build-frontend:
 	cd frontend && npm install --legacy-peer-deps && npm run build
@@ -50,7 +50,7 @@ preview-frontend:
 dev:
 	@echo "Starting backend (background) and frontend (foreground)..."
 	@DATABASE_URL=$(DBURL) nohup uvicorn project.api:app --reload --host $(HOST) --port $(PORT) > backend.log 2>&1 & \
-	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT)
+	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT) < /dev/null
 
 dev-stop:
 	-@echo "Stopping backend uvicorn (if running)..."

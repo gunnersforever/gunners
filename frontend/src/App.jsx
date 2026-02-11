@@ -536,8 +536,8 @@ function App() {
                           <Box
                             sx={{
                               display: 'grid',
-                              gridTemplateColumns: '1.2fr 0.9fr 1.1fr 1.8fr',
-                              columnGap: 0.75,
+                              gridTemplateColumns: '1fr 0.9fr 1.1fr 2.1fr',
+                              columnGap: 0.5,
                               alignItems: 'center',
                               width: '100%',
                             }}
@@ -545,13 +545,13 @@ function App() {
                             <Typography sx={{ fontWeight: 600, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {row.ticker}
                             </Typography>
-                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
                               Qty {formatQuantity(row.quantity)}
                             </Typography>
-                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
                               ${row.totalcost}
                             </Typography>
-                            <Typography sx={{ fontSize: '0.68rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <Typography sx={{ fontSize: '0.68rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
                               {formatDateLocalCompact(row.lasttransactiondate)}
                             </Typography>
                           </Box>

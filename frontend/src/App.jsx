@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 // NOTE: minor whitespace/comment to trigger reparse by Vite
 import { useTheme, useMediaQuery, Stack } from '@mui/material';
+import Grid from '@mui/material/Grid';
 import {
   Container,
   Typography,
@@ -17,7 +18,6 @@ import {
   Alert,
   Snackbar,
   CircularProgress,
-  Grid,
   Card,
   CardContent,
   ToggleButton,
@@ -67,6 +67,12 @@ function App() {
 
   const theme = useTheme();
   const isSmallScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  const isMediumDown = useMediaQuery(theme.breakpoints.down('md'));
+  const portfolioMaxHeight = isSmallScreen
+    ? '45vh'
+    : isMediumDown
+      ? 'min(46vh, 420px)'
+      : 'min(52vh, 520px)';
 
   useEffect(() => {
     if (screen === 'load') {
@@ -152,6 +158,26 @@ function App() {
     const tzMinutes = tzAbs % 60;
     const tzStr = tzMinutes === 0 ? `UTC${tzSign}${tzHours}` : `UTC${tzSign}${tzHours}:${String(tzMinutes).padStart(2,'0')}`;
     return `${year}-${month}-${day} ${hour}:${minute}:${second}.${ms} ${tzStr}`;
+  };
+
+  const formatDateLocalCompact = (isoString) => {
+    if (!isoString) return '';
+    let s = isoString.replace(' ', 'T');
+    if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s + '+00:00';
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return isoString;
+    const pad = (n, len = 2) => String(n).padStart(len, '0');
+    const year = d.getFullYear();
+    const month = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const hour = pad(d.getHours());
+    const minute = pad(d.getMinutes());
+    const tzOffsetMin = -d.getTimezoneOffset();
+    const tzSign = tzOffsetMin >= 0 ? '+' : '-';
+    const tzHours = pad(Math.floor(Math.abs(tzOffsetMin) / 60));
+    return `${year}-${month}-${day} ${hour}:${minute} UTC${tzSign}${tzHours}`;
   };
 
   const handleFileLoad = async (event) => { 
@@ -469,8 +495,8 @@ function App() {
   }
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+    <Container maxWidth="lg" sx={{ mt: 1, mb: 1 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 0.5 }}>
         {loggedInUser ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
@@ -480,49 +506,64 @@ function App() {
           <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
         )}
       </Box>
-      <Typography variant="h4" component="h1" gutterBottom align="center">
+      <Typography
+        variant="h4"
+        component="h1"
+        align="center"
+        sx={{ mb: 0.75, fontSize: isSmallScreen ? '1.6rem' : undefined }}
+      >
         Portfolio Management Tool
       </Typography>
-      {message && <Alert severity="success" sx={{ mb: 2 }}>{message}</Alert>}
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {message && <Alert severity="success" sx={{ mb: 1.5 }}>{message}</Alert>}
+      {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
 
-      <Grid container spacing={3}>
-        <Grid item xs={12} md={8}>
+      <Grid container spacing={2} alignItems="flex-start">
+        <Grid size={{ xs: 12, md: 7 }} order={{ xs: 1, md: 1 }}>
           <Card>
-            <CardContent>
-              <Typography variant="h5" gutterBottom>
+            <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+              <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
                 Current Portfolio
               </Typography>
               {(!Array.isArray(portfolio) || portfolio.length === 0) ? (
                 <Typography>No holdings in portfolio</Typography>
               ) : isSmallScreen ? (
                 // Mobile — render each record in a single responsive row
-                <Stack spacing={1}>
-                  {portfolio.map((row, index) => (
-                    <Card key={index} variant="outlined">
-                      <CardContent sx={{ px: 1, py: 1 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', flexWrap: 'wrap' }}>
-                          <Box sx={{ flex: '0 0 28%', minWidth: 72 }}>
-                            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{row.ticker}</Typography>
+                <Box sx={{ maxHeight: portfolioMaxHeight, overflowY: 'auto', pr: 0.25 }}>
+                  <Stack spacing={0.75}>
+                    {portfolio.map((row, index) => (
+                      <Card key={index} variant="outlined">
+                        <CardContent sx={{ px: 0.75, py: 0.6, '&:last-child': { pb: 0.6 } }}>
+                          <Box
+                            sx={{
+                              display: 'grid',
+                              gridTemplateColumns: '1.2fr 0.9fr 1.1fr 1.8fr',
+                              columnGap: 0.75,
+                              alignItems: 'center',
+                              width: '100%',
+                            }}
+                          >
+                            <Typography sx={{ fontWeight: 600, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {row.ticker}
+                            </Typography>
+                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                              Qty {formatQuantity(row.quantity)}
+                            </Typography>
+                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                              ${row.totalcost}
+                            </Typography>
+                            <Typography sx={{ fontSize: '0.68rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {formatDateLocalCompact(row.lasttransactiondate)}
+                            </Typography>
                           </Box>
-                          <Box sx={{ flex: '0 0 20%', minWidth: 60, textAlign: 'center' }}>
-                            <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Qty {formatQuantity(row.quantity)}</Typography>
-                          </Box>
-                          <Box sx={{ flex: '1 0 30%', minWidth: 90, textAlign: 'center' }}>
-                            <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Cost ${row.totalcost}</Typography>
-                          </Box>
-                          <Box sx={{ flex: '1 0 40%', minWidth: 120, textAlign: 'right' }}>
-                            <Typography variant="caption" color="text.secondary">{formatDateLocal(row.lasttransactiondate)}</Typography>
-                          </Box>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </Stack>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Stack>
+                </Box>
               ) : (
                 // Desktop/tablet view with horizontal scroll fallback
-                <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%' }}>
-                  <Table sx={{ width: '100%', tableLayout: 'auto' }}>
+                <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%', maxHeight: portfolioMaxHeight, overflowY: 'auto' }}>
+                  <Table size="small" sx={{ width: '100%', tableLayout: 'auto' }}>
                     <TableHead>
                       <TableRow>
                         <StyledTableCell>Ticker</StyledTableCell>
@@ -534,10 +575,10 @@ function App() {
                     <TableBody>
                       {portfolio.map((row, index) => (
                         <TableRow key={index}>
-                          <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{row.ticker}</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{formatQuantity(row.quantity)}</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>${row.totalcost}</TableCell>
-                          <TableCell sx={{ whiteSpace: 'normal' }}>{formatDateLocal(row.lasttransactiondate)}</TableCell>
+                          <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>{row.ticker}</TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>{formatQuantity(row.quantity)}</TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>${row.totalcost}</TableCell>
+                          <TableCell sx={{ whiteSpace: 'normal', py: 0.75 }}>{formatDateLocal(row.lasttransactiondate)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -547,63 +588,69 @@ function App() {
             </CardContent>
           </Card>
         </Grid>
-        <Grid item xs={12} md={4}>
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h5" gutterBottom>
-                Buy / Sell Stock
-              </Typography>
-              <ToggleButtonGroup
-                value={action}
-                exclusive
-                onChange={(e, newAction) => newAction && setAction(newAction)}
-                sx={{ mb: 2 }}
-              >
-                <ToggleButton value="buy" color="success">Buy</ToggleButton>
-                <ToggleButton value="sell" color="error">Sell</ToggleButton>
-              </ToggleButtonGroup>
-              <TextField
-                fullWidth
-                label="Symbol"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                sx={{ mb: 2 }}
-              />
-              <TextField
-                fullWidth
-                label="Quantity"
-                type="number"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                sx={{ mb: 2 }}
-              />
-              <Button variant="contained" onClick={handleProceed} fullWidth disabled={isLoadingPrice || isSubmittingOrder}>
-                {isLoadingPrice ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Fetching price...</>) : 'Proceed'}
-              </Button>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent>
-              <Typography variant="h5" gutterBottom>
-                Save Portfolio
-              </Typography>
-              <TextField
-                fullWidth
-                label="Filename (CSV)"
-                value={saveFile}
-                onChange={(e) => setSaveFile(e.target.value)}
-                sx={{ mb: 2 }}
-              />
-              <Button variant="contained" onClick={handleSave} fullWidth disabled={isSaving}>
-                {isSaving ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Saving...</>) : 'Save'}
-              </Button>
-              {savedFileUrl && (
-                <Box sx={{ mt: 1, textAlign: 'center' }}>
-                  <Button href={savedFileUrl} target="_blank" rel="noopener" size="small">Download saved CSV</Button>
-                </Box>
-              )}
-            </CardContent>
-          </Card>
+        <Grid size={{ xs: 12, md: 5 }} order={{ xs: 2, md: 2 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <Card>
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                  Buy / Sell Stock
+                </Typography>
+                <ToggleButtonGroup
+                  value={action}
+                  exclusive
+                  onChange={(e, newAction) => newAction && setAction(newAction)}
+                  size="small"
+                  sx={{ mb: 1 }}
+                >
+                  <ToggleButton value="buy" color="success">Buy</ToggleButton>
+                  <ToggleButton value="sell" color="error">Sell</ToggleButton>
+                </ToggleButtonGroup>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Symbol"
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  sx={{ mb: 1 }}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Quantity"
+                  type="number"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  sx={{ mb: 1 }}
+                />
+                <Button size="small" variant="contained" onClick={handleProceed} fullWidth disabled={isLoadingPrice || isSubmittingOrder}>
+                  {isLoadingPrice ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Fetching price...</>) : 'Proceed'}
+                </Button>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                  Save Portfolio
+                </Typography>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Filename (CSV)"
+                  value={saveFile}
+                  onChange={(e) => setSaveFile(e.target.value)}
+                  sx={{ mb: 1 }}
+                />
+                <Button size="small" variant="contained" onClick={handleSave} fullWidth disabled={isSaving}>
+                  {isSaving ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Saving...</>) : 'Save'}
+                </Button>
+                {savedFileUrl && (
+                  <Box sx={{ mt: 1, textAlign: 'center' }}>
+                    <Button href={savedFileUrl} target="_blank" rel="noopener" size="small">Download saved CSV</Button>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          </Box>
         </Grid>
       </Grid>
 

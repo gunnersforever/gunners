@@ -103,7 +103,7 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   await waitFor(() => expect(screen.queryByText(/Confirm Buy/i)).toBeNull());
 
   await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
-  expect(screen.getByText('2')).toBeInTheDocument();
+  expect(screen.getByText('2.0')).toBeInTheDocument();
   expect(screen.getByText('$200.24')).toBeInTheDocument();
   expect(screen.getByText(/2026-/)).toBeInTheDocument();
 
@@ -118,6 +118,6 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   await userEvent.click(screen.getByRole('button', { name: /Confirm/i }));
 
   await waitFor(() => expect(screen.getByText('$100.12')).toBeInTheDocument());
-  expect(screen.getByText('1')).toBeInTheDocument();
+  expect(screen.getByText('1.0')).toBeInTheDocument();
   expect(screen.getByText(/2026-/)).toBeInTheDocument();
 });

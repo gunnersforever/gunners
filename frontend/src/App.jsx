@@ -92,6 +92,12 @@ function App() {
     setSnackbarOpen(false);
   };
 
+  const formatQuantity = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '';
+    return numeric.toFixed(1);
+  };
+
   const normalizePortfolioRows = (rows) => {
     if (!Array.isArray(rows)) return [];
     return rows.map((row) => {
@@ -157,7 +163,8 @@ function App() {
     setIsLoadingFile(true);
     try {
       console.log('Uploading portfolio file', file.name);
-      const response = await fetch(`${API_BASE}/portfolio/load`, {
+      const { authFetch } = await import('./api');
+      const response = await authFetch(`${API_BASE}/portfolio/load`, {
         method: 'POST',
         body: formData,
       });
@@ -499,7 +506,7 @@ function App() {
                             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{row.ticker}</Typography>
                           </Box>
                           <Box sx={{ flex: '0 0 20%', minWidth: 60, textAlign: 'center' }}>
-                            <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Qty {row.quantity}</Typography>
+                            <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Qty {formatQuantity(row.quantity)}</Typography>
                           </Box>
                           <Box sx={{ flex: '1 0 30%', minWidth: 90, textAlign: 'center' }}>
                             <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Cost ${row.totalcost}</Typography>
@@ -528,7 +535,7 @@ function App() {
                       {portfolio.map((row, index) => (
                         <TableRow key={index}>
                           <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{row.ticker}</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{row.quantity}</TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{formatQuantity(row.quantity)}</TableCell>
                           <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>${row.totalcost}</TableCell>
                           <TableCell sx={{ whiteSpace: 'normal' }}>{formatDateLocal(row.lasttransactiondate)}</TableCell>
                         </TableRow>

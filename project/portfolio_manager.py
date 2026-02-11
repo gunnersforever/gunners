@@ -71,6 +71,25 @@ def write_portfolio(holdingslist, outfile):
         raise OSError("Output file could not be written")
 
 
+def _compute_totalcost(rowdict, quantity):
+    if rowdict.get('totalcost') not in (None, ''):
+        try:
+            return float(rowdict.get('totalcost'))
+        except Exception:
+            return 0.0
+    if rowdict.get('avgcost') not in (None, ''):
+        try:
+            return float(rowdict.get('avgcost')) * float(quantity)
+        except Exception:
+            return 0.0
+    if rowdict.get('curprice') not in (None, ''):
+        try:
+            return float(rowdict.get('curprice')) * float(quantity)
+        except Exception:
+            return 0.0
+    return 0.0
+
+
 # Sell a ticker from the current portfolio
 def sell_ticker(holdingslist, symbol, amt):
     try:
@@ -98,8 +117,9 @@ def sell_ticker(holdingslist, symbol, amt):
                 if existingqty < amt_int:
                     raise ValueError(f"Not enough holdings for {symbol}. Current holdings: {existingqty}; quantity to be sold: {amt_int}")
                 else:
+                    existing_totalcost = _compute_totalcost(rowdict, existingqty)
                     rowdict["quantity"] = existingqty - amt_int
-                    rowdict["totalcost"] = round(float(rowdict.get("totalcost", 0)) - (amt_int * tickerprice), 2)
+                    rowdict["totalcost"] = round(existing_totalcost - (amt_int * tickerprice), 2)
                     # record UTC timestamp for the transaction
                     rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                     subtracted = True
@@ -135,8 +155,9 @@ def buy_ticker(holdingslist, symbol, amt):
                     existingqty = int(float(rowdict.get("quantity", 0)))
                 except Exception:
                     raise ValueError("Existing quantity is not a number")
+                existing_totalcost = _compute_totalcost(rowdict, existingqty)
                 rowdict["quantity"] = existingqty + amt_int
-                rowdict["totalcost"] = round(float(rowdict.get("totalcost", 0)) + (amt_int * tickerprice), 2)
+                rowdict["totalcost"] = round(existing_totalcost + (amt_int * tickerprice), 2)
                 # record UTC timestamp for the transaction
                 rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                 added = True

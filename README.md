@@ -17,7 +17,21 @@ python -m venv .venv
 pip install -r project/requirements.txt
 ```
 
-3. Configure the database (optional):
+3. Configure Gemini (Tyche AI Advisor):
+- Copy the env example and set the API key:
+
+```bash
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY
+```
+
+- For one-off runs, you can export directly:
+
+```bash
+export GEMINI_API_KEY='your_key_here'
+```
+
+4. Configure the database (optional):
 - By default the app uses SQLite file `./gunners.db`.
 - To override, set `DATABASE_URL` before running or testing, e.g.:
 
@@ -25,7 +39,7 @@ pip install -r project/requirements.txt
 export DATABASE_URL='sqlite:///./dev.db'
 ```
 
-4. Initialize database schema:
+5. Initialize database schema:
 - For development, you can quickly create tables using:
 
 ```bash
@@ -50,7 +64,7 @@ make db-revision MESSAGE="add some change"
 make db-upgrade
 ```
 
-5. Run the API server:
+6. Run the API server:
 
 ```bash
 uvicorn project.api:app --reload --host 0.0.0.0 --port 8000
@@ -75,6 +89,8 @@ npm run dev
 ```
 
 The Vite dev server proxies `/api` to the backend. Make sure the backend is running (default: `http://localhost:8000`).
+
+Note: The Tyche AI Advisor requires `GEMINI_API_KEY` to be configured in `.env` or exported in your shell before running the backend.
 
 Simplified start (Makefile) ✅
 For convenience, there are `Makefile` targets to setup and start the app during development.

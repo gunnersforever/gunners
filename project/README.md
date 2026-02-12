@@ -38,6 +38,21 @@ PMT is a console-based application where users can interactively enter instructi
 ### How to run
 In a python-enabled command line, and in the ~/project directory, run the program by calling "python project.py".
 
+## Tyche AI Advisor (Gemini) setup
+
+The advisor endpoint requires a Gemini API key:
+
+```bash
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY
+```
+
+Or export it before running the API server:
+
+```bash
+export GEMINI_API_KEY='your_key_here'
+```
+
 ## Database migrations (Alembic) ⚠️
 
 We use SQLAlchemy + Alembic for schema migrations. Development convenience commands are available in the top-level `Makefile` (see root of repository).

@@ -31,6 +31,7 @@ import uuid
 # Prefer bcrypt if available; include pbkdf2_sha256 in schemes for compatibility
 import os
 TOKEN_EXPIRE_DAYS = int(os.environ.get('TOKEN_EXPIRE_DAYS', '7'))
+PRICE_CACHE_TTL_SECONDS = int(os.environ.get('PRICE_CACHE_TTL_SECONDS', '600'))
 
 try:
     import bcrypt  # optional native backend
@@ -75,6 +76,31 @@ def require_auth(authorization: str = Header(None), db: Session = Depends(get_db
     if not user:
         raise HTTPException(status_code=401, detail='User not found')
     return user.username
+
+def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
+    symbol = (symbol or '').strip().upper()
+    if not symbol:
+        return None
+    now = datetime.datetime.utcnow()
+    try:
+        cached = db.query(models.PriceCache).filter(models.PriceCache.symbol == symbol).first()
+    except OperationalError:
+        return get_ticker_price(symbol)
+    if cached and cached.updated_at and not force_refresh:
+        age_seconds = (now - cached.updated_at).total_seconds()
+        if age_seconds <= PRICE_CACHE_TTL_SECONDS and cached.price is not None:
+            return cached.price
+    price = get_ticker_price(symbol)
+    if price is None:
+        return None
+    if cached:
+        cached.price = price
+        cached.updated_at = now
+    else:
+        cached = models.PriceCache(symbol=symbol, price=price, updated_at=now)
+        db.add(cached)
+    db.commit()
+    return price
 
 from sqlalchemy.exc import OperationalError
 
@@ -343,7 +369,10 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         for h in portfolio.holdings:
             # use internal key 'ticker' for portfolio_manager
             rows.append({'ticker': h.symbol, 'quantity': str(h.quantity), 'avgcost': str(h.avgcost) if h.avgcost is not None else '', 'curprice': str(h.curprice) if h.curprice is not None else '', 'lasttransactiondate': h.lasttransactiondate or ''})
-        new_rows, message = buy_ticker(rows, symbol, str(quantity))
+        cached_price = get_cached_price(symbol, db, force_refresh=True)
+        if cached_price is None:
+            raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
+        new_rows, message = buy_ticker(rows, symbol, str(quantity), price=cached_price)
         # replace holdings
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
@@ -377,8 +406,8 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/get_price")
-def get_price(symbol: str):
-    price = get_ticker_price(symbol)
+def get_price(symbol: str, db: Session = Depends(get_db)):
+    price = get_cached_price(symbol, db)
     logging.info("Get price for %s: %s", symbol, price)
     if price is None:
         raise HTTPException(status_code=400, detail="Unable to fetch price")
@@ -400,7 +429,10 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
         rows = []
         for h in portfolio.holdings:
             rows.append({'ticker': h.symbol, 'quantity': str(h.quantity), 'avgcost': str(h.avgcost) if h.avgcost is not None else '', 'curprice': str(h.curprice) if h.curprice is not None else '', 'lasttransactiondate': h.lasttransactiondate or ''})
-        new_rows, message = sell_ticker(rows, symbol, str(quantity))
+        cached_price = get_cached_price(symbol, db, force_refresh=True)
+        if cached_price is None:
+            raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
+        new_rows, message = sell_ticker(rows, symbol, str(quantity), price=cached_price)
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''

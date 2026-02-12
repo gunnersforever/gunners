@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import logoLong from '../img/Tyche TPM Long Logo.jpeg';
+import logoShort from '../img/Tyche TPM Small Logo.jpeg';
 // NOTE: minor whitespace/comment to trigger reparse by Vite
 import { useTheme, useMediaQuery, Stack } from '@mui/material';
 import Grid from '@mui/material/Grid';
@@ -61,6 +63,7 @@ function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [savedFileUrl, setSavedFileUrl] = useState('');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [priceMap, setPriceMap] = useState({});
 
   // Use a dev proxy path so browser requests go through Vite -> backend and avoid CORS/network issues
   const API_BASE = '/api'; // proxied to http://127.0.0.1:8000 by vite.config.js
@@ -73,6 +76,7 @@ function App() {
     : isMediumDown
       ? 'min(46vh, 420px)'
       : 'min(52vh, 520px)';
+  const portfolioCardHeight = isSmallScreen ? '250px' : 'min(60vh, 560px)';
 
   useEffect(() => {
     if (screen === 'load') {
@@ -85,6 +89,47 @@ function App() {
         setLoggedInUser(getUsername());
       } catch (e) {}
     })();
+  }, [screen]);
+
+  const getPortfolioSymbols = (rows) => Array.from(
+    new Set(
+      (rows || [])
+        .map((row) => (row.ticker || row.symbol || '').trim().toUpperCase())
+        .filter((value) => value)
+    )
+  );
+
+  const refreshPricesForSymbols = async (symbols, { merge = false } = {}) => {
+    if (!symbols || symbols.length === 0) {
+      if (!merge) setPriceMap({});
+      return;
+    }
+    try {
+      const responses = await Promise.all(
+        symbols.map(async (ticker) => {
+          const response = await fetch(`${API_BASE}/get_price?symbol=${ticker}`);
+          if (!response.ok) return [ticker, null];
+          const data = await response.json().catch(() => null);
+          const numeric = data && Number(data.price);
+          return [ticker, Number.isFinite(numeric) ? numeric : null];
+        })
+      );
+      const nextMap = responses.reduce((acc, [ticker, value]) => {
+        acc[ticker] = value;
+        return acc;
+      }, {});
+      setPriceMap((prev) => (merge ? { ...prev, ...nextMap } : nextMap));
+    } catch (err) {
+      if (!merge) setPriceMap({});
+    }
+  };
+
+  useEffect(() => {
+    if (screen !== 'main') return;
+    if (!Array.isArray(portfolio) || portfolio.length === 0) return;
+    if (Object.keys(priceMap).length > 0) return;
+    const symbols = getPortfolioSymbols(portfolio);
+    refreshPricesForSymbols(symbols, { merge: false });
   }, [screen]);
 
   const handleShowSnackbar = (msg, severity = 'success') => {
@@ -102,6 +147,11 @@ function App() {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return '';
     return numeric.toFixed(1);
+  };
+
+  const formatCurrency = (value, digits = 2) => {
+    if (!Number.isFinite(value)) return '';
+    return value.toFixed(digits);
   };
 
   const normalizePortfolioRows = (rows) => {
@@ -160,7 +210,7 @@ function App() {
     return `${year}-${month}-${day} ${hour}:${minute}:${second}.${ms} ${tzStr}`;
   };
 
-  const formatDateLocalCompact = (isoString) => {
+  const formatDateUtcShort = (isoString) => {
     if (!isoString) return '';
     let s = isoString.replace(' ', 'T');
     if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
@@ -169,16 +219,17 @@ function App() {
     const d = new Date(s);
     if (isNaN(d.getTime())) return isoString;
     const pad = (n, len = 2) => String(n).padStart(len, '0');
-    const year = d.getFullYear();
-    const month = pad(d.getMonth() + 1);
-    const day = pad(d.getDate());
-    const hour = pad(d.getHours());
-    const minute = pad(d.getMinutes());
-    const tzOffsetMin = -d.getTimezoneOffset();
-    const tzSign = tzOffsetMin >= 0 ? '+' : '-';
-    const tzHours = pad(Math.floor(Math.abs(tzOffsetMin) / 60));
-    return `${year}-${month}-${day} ${hour}:${minute} UTC${tzSign}${tzHours}`;
+    const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    const day = pad(d.getUTCDate());
+    const month = months[d.getUTCMonth()];
+    const year = String(d.getUTCFullYear()).slice(-2);
+    const hour = pad(d.getUTCHours());
+    const minute = pad(d.getUTCMinutes());
+    const second = pad(d.getUTCSeconds());
+    return `${day}-${month}-${year} ${hour}:${minute}:${second} UTC`;
   };
+
+  const formatDateLocalCompact = (isoString) => formatDateUtcShort(isoString);
 
   const handleFileLoad = async (event) => { 
     const file = event.target.files[0];
@@ -196,7 +247,9 @@ function App() {
       });
       const data = await response.json().catch(() => null);
       if (response.ok && data) {
-        setPortfolio(normalizePortfolioRows(data.portfolio || []));
+        const nextPortfolio = normalizePortfolioRows(data.portfolio || []);
+        setPortfolio(nextPortfolio);
+        refreshPricesForSymbols(getPortfolioSymbols(nextPortfolio), { merge: false });
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Portfolio loaded', 'success');
@@ -217,6 +270,7 @@ function App() {
 
   const handleNewPortfolio = async () => {
     setPortfolio([]);
+    setPriceMap({});
     setSavedFileUrl('');
     setSaveFile('');
     setSymbol('');
@@ -295,7 +349,12 @@ function App() {
       const data = await response.json().catch((e) => { console.error('Invalid JSON in response', e); return null; });
       console.log('Order data', data);
       if (response.ok && data) {
-        setPortfolio(normalizePortfolioRows(data.portfolio || []));
+        const nextPortfolio = normalizePortfolioRows(data.portfolio || []);
+        setPortfolio(nextPortfolio);
+        const refreshSymbol = symbol.trim().toUpperCase();
+        if (refreshSymbol) {
+          refreshPricesForSymbols([refreshSymbol], { merge: true });
+        }
         setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Transaction completed', 'success');
@@ -390,6 +449,7 @@ function App() {
     await logoutUser();
     setLoggedInUser('');
     setPortfolio([]);
+    setPriceMap({});
     setMessage('Logged out');
     setError('');
     setSavedFileUrl('');
@@ -403,19 +463,19 @@ function App() {
   if (screen === 'load') {
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+          <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 28, maxWidth: '45%' }} />
           {loggedInUser ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
-              <Button size="small" variant="outlined" onClick={handleLogout}>Logout</Button>
+              <Button size="small" variant="outlined" onClick={handleLogout} sx={{ minWidth: 64, px: 1.25 }}>
+                Logout
+              </Button>
             </Box>
           ) : (
             <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
           )}
         </Box>
-        <Typography variant="h4" component="h1" gutterBottom align="center">
-          Portfolio Management Tool
-        </Typography>
         <Card>
           <CardContent>
             <Typography variant="h5" gutterBottom>
@@ -446,12 +506,24 @@ function App() {
     );
   }
 
+  const getUnrealized = (row) => {
+    const ticker = (row.ticker || row.symbol || '').trim().toUpperCase();
+    const currentPrice = priceMap[ticker];
+    const numericQty = Number(row.quantity);
+    const numericTotal = Number(row.totalcost);
+    if (!Number.isFinite(currentPrice) || !Number.isFinite(numericQty) || !Number.isFinite(numericTotal) || numericQty === 0) {
+      return null;
+    }
+    const avgCost = numericTotal / numericQty;
+    return (currentPrice - avgCost) * numericQty;
+  };
+
   if (screen === 'login') {
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
-        <Typography variant="h4" component="h1" gutterBottom align="center">
-          Portfolio Management Tool — Login
-        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+          <Box component="img" src={logoLong} alt="Tyche TPM" sx={{ height: 56, maxWidth: '100%', objectFit: 'contain' }} />
+        </Box>
         <Card>
           <CardContent>
             <Typography variant="h5" gutterBottom>
@@ -495,32 +567,27 @@ function App() {
   }
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 1, mb: 1 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 0.5 }}>
+    <Container maxWidth="lg" sx={{ mt: 0.5, mb: 0.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+        <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 28, maxWidth: '35%' }} />
         {loggedInUser ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
-            <Button size="small" variant="outlined" onClick={handleLogout}>Logout</Button>
+            <Button size="small" variant="outlined" onClick={handleLogout} sx={{ minWidth: 64, px: 1.25 }}>
+              Logout
+            </Button>
           </Box>
         ) : (
           <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
         )}
       </Box>
-      <Typography
-        variant="h4"
-        component="h1"
-        align="center"
-        sx={{ mb: 0.75, fontSize: isSmallScreen ? '1.6rem' : undefined }}
-      >
-        Portfolio Management Tool
-      </Typography>
-      {message && <Alert severity="success" sx={{ mb: 1.5 }}>{message}</Alert>}
-      {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
+      {message && <Alert severity="success" sx={{ mb: 1 }}>{message}</Alert>}
+      {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
 
-      <Grid container spacing={2} alignItems="flex-start">
+      <Grid container spacing={1.5} alignItems="flex-start">
         <Grid size={{ xs: 12, md: 7 }} order={{ xs: 1, md: 1 }}>
-          <Card>
-            <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+          <Card sx={{ height: portfolioCardHeight, maxHeight: portfolioCardHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <CardContent sx={{ py: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', '&:last-child': { pb: 1 } }}>
               <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
                 Current Portfolio
               </Typography>
@@ -528,30 +595,40 @@ function App() {
                 <Typography>No holdings in portfolio</Typography>
               ) : isSmallScreen ? (
                 // Mobile — render each record in a single responsive row
-                <Box sx={{ maxHeight: portfolioMaxHeight, overflowY: 'auto', pr: 0.25 }}>
-                  <Stack spacing={0.75}>
+                <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.25 }}>
+                  <Stack spacing={0.75} sx={{ minHeight: 0 }}>
                     {portfolio.map((row, index) => (
                       <Card key={index} variant="outlined">
                         <CardContent sx={{ px: 0.75, py: 0.6, '&:last-child': { pb: 0.6 } }}>
                           <Box
                             sx={{
                               display: 'grid',
-                              gridTemplateColumns: '1fr 0.9fr 1.1fr 2.1fr',
-                              columnGap: 0.5,
+                              gridTemplateColumns: '0.9fr 0.9fr 1fr 1fr 1.8fr',
+                              columnGap: 0.4,
                               alignItems: 'center',
                               width: '100%',
                             }}
                           >
-                            <Typography sx={{ fontWeight: 600, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>
                               {row.ticker}
                             </Typography>
                             <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
-                              Qty {formatQuantity(row.quantity)}
+                              {formatQuantity(row.quantity)}
                             </Typography>
                             <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
                               ${row.totalcost}
                             </Typography>
-                            <Typography sx={{ fontSize: '0.68rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
+                            {(() => {
+                              const pnl = getUnrealized(row);
+                              const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
+                              const pnlText = pnl === null ? '—' : formatCurrency(pnl);
+                              return (
+                                <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25, color: pnlColor }}>
+                                  {pnlText}
+                                </Typography>
+                              );
+                            })()}
+                            <Typography sx={{ fontSize: '0.64rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
                               {formatDateLocalCompact(row.lasttransactiondate)}
                             </Typography>
                           </Box>
@@ -562,13 +639,14 @@ function App() {
                 </Box>
               ) : (
                 // Desktop/tablet view with horizontal scroll fallback
-                <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%', maxHeight: portfolioMaxHeight, overflowY: 'auto' }}>
+                <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%', flex: 1, minHeight: 0, overflowY: 'auto' }}>
                   <Table size="small" sx={{ width: '100%', tableLayout: 'auto' }}>
                     <TableHead>
                       <TableRow>
                         <StyledTableCell>Ticker</StyledTableCell>
                         <StyledTableCell align="right">Quantity</StyledTableCell>
                         <StyledTableCell align="right">Total Cost</StyledTableCell>
+                        <StyledTableCell align="right">Unrealized P/L</StyledTableCell>
                         <StyledTableCell>Last Transaction Date</StyledTableCell>
                       </TableRow>
                     </TableHead>
@@ -578,7 +656,19 @@ function App() {
                           <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>{row.ticker}</TableCell>
                           <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>{formatQuantity(row.quantity)}</TableCell>
                           <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>${row.totalcost}</TableCell>
-                          <TableCell sx={{ whiteSpace: 'normal', py: 0.75 }}>{formatDateLocal(row.lasttransactiondate)}</TableCell>
+                          {(() => {
+                            const pnl = getUnrealized(row);
+                            const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
+                            const pnlText = pnl === null ? '—' : formatCurrency(pnl);
+                            return (
+                              <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75, color: pnlColor }}>
+                                {pnlText}
+                              </TableCell>
+                            );
+                          })()}
+                          <TableCell sx={{ whiteSpace: 'nowrap', py: 0.75, fontSize: '0.75rem' }}>
+                            {formatDateUtcShort(row.lasttransactiondate)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -589,9 +679,9 @@ function App() {
           </Card>
         </Grid>
         <Grid size={{ xs: 12, md: 5 }} order={{ xs: 2, md: 2 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             <Card>
-              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
                 <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
                   Buy / Sell Stock
                 </Typography>
@@ -600,7 +690,7 @@ function App() {
                   exclusive
                   onChange={(e, newAction) => newAction && setAction(newAction)}
                   size="small"
-                  sx={{ mb: 1 }}
+                  sx={{ mb: 0.75 }}
                 >
                   <ToggleButton value="buy" color="success">Buy</ToggleButton>
                   <ToggleButton value="sell" color="error">Sell</ToggleButton>
@@ -611,7 +701,7 @@ function App() {
                   label="Symbol"
                   value={symbol}
                   onChange={(e) => setSymbol(e.target.value)}
-                  sx={{ mb: 1 }}
+                  sx={{ mb: 0.75 }}
                 />
                 <TextField
                   fullWidth
@@ -620,7 +710,7 @@ function App() {
                   type="number"
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
-                  sx={{ mb: 1 }}
+                  sx={{ mb: 0.75 }}
                 />
                 <Button size="small" variant="contained" onClick={handleProceed} fullWidth disabled={isLoadingPrice || isSubmittingOrder}>
                   {isLoadingPrice ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Fetching price...</>) : 'Proceed'}
@@ -628,7 +718,7 @@ function App() {
               </CardContent>
             </Card>
             <Card>
-              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
                 <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
                   Save Portfolio
                 </Typography>
@@ -638,7 +728,7 @@ function App() {
                   label="Filename (CSV)"
                   value={saveFile}
                   onChange={(e) => setSaveFile(e.target.value)}
-                  sx={{ mb: 1 }}
+                  sx={{ mb: 0.75 }}
                 />
                 <Button size="small" variant="contained" onClick={handleSave} fullWidth disabled={isSaving}>
                   {isSaving ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Saving...</>) : 'Save'}

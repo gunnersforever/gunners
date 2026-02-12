@@ -12,11 +12,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const makeQueuedFetch = (responses) => (
+  vi.fn((url) => {
+    if (String(url).includes('/get_price')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ price: 100 }) });
+    }
+    const next = responses.shift();
+    if (!next) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    }
+    return Promise.resolve(next);
+  })
+);
+
 test('shows error when /api/portfolio/reset returns non-ok and does not crash', async () => {
   render(<App />);
 
   // perform login first (login screen is initial)
-  global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) });
+  global.fetch = makeQueuedFetch([
+    { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) },
+  ]);
   await userEvent.type(screen.getByLabelText(/Username/), 'u');
   await userEvent.type(screen.getByLabelText(/Password/), 'p');
   await userEvent.click(screen.getByRole('button', { name: /Login/i }));
@@ -25,7 +40,9 @@ test('shows error when /api/portfolio/reset returns non-ok and does not crash', 
   await screen.findByText(/Choose an Option/i);
 
   // Setup next fetch (portfolio reset) to return non-ok
-  global.fetch.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ detail: 'Authorization required' }) });
+  global.fetch = makeQueuedFetch([
+    { ok: false, status: 401, json: async () => ({ detail: 'Authorization required' }) },
+  ]);
 
   // click Start New Portfolio (should show error but still proceed to main)
   await userEvent.click(screen.getByRole('button', { name: /Start New Portfolio/i }));
@@ -36,14 +53,18 @@ test('shows error when /api/portfolio/reset returns non-ok and does not crash', 
 test('renders empty portfolio when backend returns ok with empty list', async () => {
   render(<App />);
   // perform login first
-  global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) });
+  global.fetch = makeQueuedFetch([
+    { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) },
+  ]);
   await userEvent.type(screen.getByLabelText(/Username/), 'u');
   await userEvent.type(screen.getByLabelText(/Password/), 'p');
   await userEvent.click(screen.getByRole('button', { name: /Login/i }));
   await screen.findByText(/Choose an Option/i);
 
   // portfolio reset returns empty ok
-  global.fetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ message: 'Started new portfolio', portfolio: [] }) });
+  global.fetch = makeQueuedFetch([
+    { ok: true, status: 200, json: async () => ({ message: 'Started new portfolio', portfolio: [] }) },
+  ]);
 
   await userEvent.click(screen.getByRole('button', { name: /Start New Portfolio/i }));
   await waitFor(() => expect(screen.getByText(/No holdings in portfolio/i)).toBeInTheDocument());
@@ -56,12 +77,10 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   render(<App />);
 
   const mockOk = (payload) => ({ ok: true, status: 200, json: async () => payload });
-
-  global.fetch
-    .mockResolvedValueOnce(mockOk({ access_token: 'a', refresh_token: 'r' }))
-    .mockResolvedValueOnce(mockOk({ message: 'Started new portfolio', portfolio: [] }))
-    .mockResolvedValueOnce(mockOk({ price: 100.12 }))
-    .mockResolvedValueOnce(mockOk({
+  global.fetch = makeQueuedFetch([
+    mockOk({ access_token: 'a', refresh_token: 'r' }),
+    mockOk({ message: 'Started new portfolio', portfolio: [] }),
+    mockOk({
       message: 'Bought',
       portfolio: [
         {
@@ -71,9 +90,8 @@ test('login -> buy -> sell updates portfolio rows', async () => {
           lasttransactiondate: '2026-02-09T00:00:00Z',
         },
       ],
-    }))
-    .mockResolvedValueOnce(mockOk({ price: 110.00 }))
-    .mockResolvedValueOnce(mockOk({
+    }),
+    mockOk({
       message: 'Sold',
       portfolio: [
         {
@@ -83,7 +101,8 @@ test('login -> buy -> sell updates portfolio rows', async () => {
           lasttransactiondate: '2026-02-09T01:00:00Z',
         },
       ],
-    }));
+    }),
+  ]);
 
   await userEvent.type(screen.getByLabelText(/Username/), 'u');
   await userEvent.type(screen.getByLabelText(/Password/), 'p');
@@ -105,7 +124,7 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
   expect(screen.getByText('2.0')).toBeInTheDocument();
   expect(screen.getByText('$200.24')).toBeInTheDocument();
-  expect(screen.getByText(/2026-/)).toBeInTheDocument();
+  expect(screen.getByText(/-FEB-26/)).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: /Sell/i }));
   await userEvent.clear(screen.getByLabelText(/Symbol/i));
@@ -119,5 +138,5 @@ test('login -> buy -> sell updates portfolio rows', async () => {
 
   await waitFor(() => expect(screen.getByText('$100.12')).toBeInTheDocument());
   expect(screen.getByText('1.0')).toBeInTheDocument();
-  expect(screen.getByText(/2026-/)).toBeInTheDocument();
+  expect(screen.getByText(/-FEB-26/)).toBeInTheDocument();
 });

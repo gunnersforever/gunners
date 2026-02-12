@@ -45,3 +45,10 @@ class SessionToken(Base):
     created_at = Column(DateTime, nullable=True)
 
     user = relationship('User', back_populates='sessions')
+
+class PriceCache(Base):
+    __tablename__ = 'price_cache'
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, unique=True, index=True, nullable=False)
+    price = Column(Float, nullable=True)
+    updated_at = Column(DateTime, nullable=True)

@@ -1,5 +1,7 @@
 import csv, pandas, requests
 
+_PRICE_UNSET = object()
+
 
 # Retrieve a saved portfolio (csv) into memory
 def retrieve_portfolio(infile):
@@ -91,7 +93,7 @@ def _compute_totalcost(rowdict, quantity):
 
 
 # Sell a ticker from the current portfolio
-def sell_ticker(holdingslist, symbol, amt):
+def sell_ticker(holdingslist, symbol, amt, price=_PRICE_UNSET):
     try:
         # allow numeric strings like '1' or '1.0' and numeric types
         try:
@@ -101,7 +103,10 @@ def sell_ticker(holdingslist, symbol, amt):
             amt_int = int(amt_float)
         except Exception:
             raise ValueError("Input quantity is not an integer!")
-        tickerprice = get_ticker_price(symbol)
+        if price is _PRICE_UNSET:
+            tickerprice = get_ticker_price(symbol)
+        else:
+            tickerprice = price
         if tickerprice is None:
             raise Exception(f"Unable to fetch current price for {symbol}")
         # Proceed
@@ -132,7 +137,7 @@ def sell_ticker(holdingslist, symbol, amt):
 
 
 # Buy a ticker and add into the current portfolio
-def buy_ticker(holdingslist, symbol, amt):
+def buy_ticker(holdingslist, symbol, amt, price=_PRICE_UNSET):
     try:
         # allow numeric strings like '1' or '1.0' and numeric types
         try:
@@ -142,7 +147,10 @@ def buy_ticker(holdingslist, symbol, amt):
             amt_int = int(amt_float)
         except Exception:
             raise ValueError("Input quantity is not an integer!")
-        tickerprice = get_ticker_price(symbol)
+        if price is _PRICE_UNSET:
+            tickerprice = get_ticker_price(symbol)
+        else:
+            tickerprice = price
         if tickerprice is None:
             raise Exception(f"Unable to fetch current price for {symbol}")
         # Proceed

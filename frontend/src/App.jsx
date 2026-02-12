@@ -29,6 +29,15 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Checkbox,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Select,
+  TextareaAutosize,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 
@@ -64,6 +73,16 @@ function App() {
   const [savedFileUrl, setSavedFileUrl] = useState('');
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const [priceMap, setPriceMap] = useState({});
+  const [advisorAge, setAdvisorAge] = useState('');
+  const [advisorRisk, setAdvisorRisk] = useState('Balanced');
+  const [advisorAppetite, setAdvisorAppetite] = useState('Medium');
+  const [advisorHorizon, setAdvisorHorizon] = useState('Medium');
+  const [advisorNotes, setAdvisorNotes] = useState('');
+  const [advisorLoading, setAdvisorLoading] = useState(false);
+  const [advisorJson, setAdvisorJson] = useState('');
+  const [advisorRecs, setAdvisorRecs] = useState([]);
+  const [advisorSelected, setAdvisorSelected] = useState({});
+  const [activeTab, setActiveTab] = useState(0);
 
   // Use a dev proxy path so browser requests go through Vite -> backend and avoid CORS/network issues
   const API_BASE = '/api'; // proxied to http://127.0.0.1:8000 by vite.config.js
@@ -136,6 +155,136 @@ function App() {
     setSnackbarMessage(msg);
     setSnackbarSeverity(severity);
     setSnackbarOpen(true);
+  };
+
+  const buildMockRecommendations = (rows, horizon) => {
+    const baseSymbols = rows.length
+      ? rows.map((row) => (row.ticker || row.symbol || '').toUpperCase()).filter(Boolean)
+      : ['AAPL', 'MSFT', 'TSLA', 'AMZN'];
+    const unique = Array.from(new Set(baseSymbols)).slice(0, 5);
+    return unique.map((symbol, index) => {
+      const action = index % 3 === 0 ? 'BUY' : index % 3 === 1 ? 'HOLD' : 'SELL';
+      const quantity = action === 'SELL' ? 5 : 10;
+      return {
+        id: `${symbol}-${index}`,
+        action,
+        symbol,
+        quantity,
+        horizon,
+        confidence: 0.62 + (index * 0.06),
+        rationale: `${action} recommendation based on portfolio balance and ${horizon.toLowerCase()} horizon.`,
+      };
+    });
+  };
+
+    const horizonDurations = {
+      Short: '3 to 12 months',
+      Medium: '1 to 3 years',
+      Long: '3 years and beyond',
+    };
+
+    const handleAdvisorGenerateWithGemini = async () => {
+      if (!advisorAge || !advisorHorizon) {
+        handleShowSnackbar('Please enter age and select investment horizon', 'error');
+        return;
+      }
+      setAdvisorLoading(true);
+      try {
+        const { authFetch } = await import('./api');
+        const portfolioCsv = portfolio.length
+          ? `symbol,quantity,total_cost,avg_cost\n${portfolio.map((r) => `${r.ticker || r.symbol},"${r.quantity}","${r.totalcost}","${(Number(r.totalcost) / Number(r.quantity)).toFixed(2)}"`).join('\n')}`
+          : 'symbol,quantity,total_cost,avg_cost\n(empty portfolio)';
+
+        const prompt = `You are a professional financial advisor specializing in offering solid, non-biased, sector-neutral investment advices based on the age, risk profile, risk appetite, intended investment horizon and the existing portfolio (attached to this prompt) of the user. Your advice should also leverage publicly available market news and trend, giving a slight tilt towards risk adjusted low MER ETFs than individual stocks, avoiding any bespoke options strategies (covered call, protective put etc.). Your suggestion could be a mixture of selling some existing portfolio and buying some suggestive stocks in the view of balancing the potential outcome of the suggestions, in order to meet with the investment horizon, risk appetite, risk profile, age of the user.
+
+  User Profile:
+  - Age: ${advisorAge}
+  - Risk Profile: ${advisorRisk}
+  - Risk Appetite: ${advisorAppetite}
+  - Investment Horizon: ${advisorHorizon} (${horizonDurations[advisorHorizon]})
+  ${advisorNotes ? `- Market Notes: ${advisorNotes}` : ''}
+
+  Existing Portfolio (CSV):
+  ${portfolioCsv}
+
+  Please provide your recommendations in JSON format with the following structure for each recommendation:
+  {
+    "recommendations": [
+      {
+        "action": "BUY" | "SELL" | "HOLD",
+        "symbol": "TICKER",
+        "quantity": number,
+        "rationale": "brief explanation"
+      }
+    ]
+  }`;
+
+        const response = await authFetch(`${API_BASE}/gemini/advise`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.detail || 'Failed to fetch advisor recommendations');
+        }
+
+        const data = await response.json();
+        try {
+          const recs = data.recommendations || [];
+          const payload = {
+            profile: {
+              age: Number(advisorAge),
+              risk_profile: advisorRisk,
+              risk_appetite: advisorAppetite,
+              horizon: advisorHorizon,
+              horizon_duration: horizonDurations[advisorHorizon],
+            },
+            portfolio: portfolio.map((row) => ({
+              symbol: row.ticker || row.symbol || '',
+              quantity: row.quantity,
+              total_cost: row.totalcost,
+            })),
+            market_notes: advisorNotes,
+            recommendations: recs,
+          };
+          const selected = recs.reduce((acc, rec) => {
+            acc[`${rec.symbol}-${rec.action}`] = true;
+            return acc;
+          }, {});
+          setAdvisorRecs(recs.map((rec, idx) => ({
+            id: `${rec.symbol}-${rec.action}`,
+            ...rec,
+          })));
+          setAdvisorSelected(selected);
+          setAdvisorJson(JSON.stringify(data, null, 2));
+          handleShowSnackbar('Advisor recommendations loaded', 'success');
+        } catch (parseErr) {
+          console.error('Parse error:', parseErr);
+          handleShowSnackbar('Failed to parse recommendations', 'error');
+        }
+      } catch (err) {
+        console.error('Advisor error:', err);
+        handleShowSnackbar(err.message || 'Advisor request failed', 'error');
+      } finally {
+        setAdvisorLoading(false);
+      }
+    };
+  const handleAdvisorGenerate = () => {
+    handleAdvisorGenerateWithGemini();
+  };
+
+  const toggleAdvisorSelect = (id) => {
+    setAdvisorSelected((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const setAdvisorAll = (value) => {
+    const next = advisorRecs.reduce((acc, rec) => {
+      acc[rec.id] = value;
+      return acc;
+    }, {});
+    setAdvisorSelected(next);
   };
 
   const handleCloseSnackbar = (_, reason) => {
@@ -584,165 +733,286 @@ function App() {
       {message && <Alert severity="success" sx={{ mb: 1 }}>{message}</Alert>}
       {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
 
-      <Grid container spacing={1.5} alignItems="flex-start">
-        <Grid size={{ xs: 12, md: 7 }} order={{ xs: 1, md: 1 }}>
-          <Card sx={{ height: portfolioCardHeight, maxHeight: portfolioCardHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <CardContent sx={{ py: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', '&:last-child': { pb: 1 } }}>
-              <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
-                Current Portfolio
-              </Typography>
-              {(!Array.isArray(portfolio) || portfolio.length === 0) ? (
-                <Typography>No holdings in portfolio</Typography>
-              ) : isSmallScreen ? (
-                // Mobile — render each record in a single responsive row
-                <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.25 }}>
-                  <Stack spacing={0.75} sx={{ minHeight: 0 }}>
-                    {portfolio.map((row, index) => (
-                      <Card key={index} variant="outlined">
-                        <CardContent sx={{ px: 0.75, py: 0.6, '&:last-child': { pb: 0.6 } }}>
-                          <Box
-                            sx={{
-                              display: 'grid',
-                              gridTemplateColumns: '0.9fr 0.9fr 1fr 1fr 1.8fr',
-                              columnGap: 0.4,
-                              alignItems: 'center',
-                              width: '100%',
-                            }}
-                          >
-                            <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>
-                              {row.ticker}
-                            </Typography>
-                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
-                              {formatQuantity(row.quantity)}
-                            </Typography>
-                            <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
-                              ${row.totalcost}
-                            </Typography>
+      <Tabs
+        value={activeTab}
+        onChange={(_, value) => setActiveTab(value)}
+        sx={{ mb: 1.5 }}
+        variant="scrollable"
+        allowScrollButtonsMobile
+      >
+        <Tab label="My Portfolio" />
+        <Tab label="Tyche AI Advisor" />
+      </Tabs>
+
+      {activeTab === 0 && (
+        <Grid container spacing={1.5} alignItems="flex-start">
+          <Grid size={{ xs: 12, md: 7 }} order={{ xs: 1, md: 1 }}>
+            <Card sx={{ height: portfolioCardHeight, maxHeight: portfolioCardHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <CardContent sx={{ py: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', '&:last-child': { pb: 1 } }}>
+                <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                  Current Portfolio
+                </Typography>
+                {(!Array.isArray(portfolio) || portfolio.length === 0) ? (
+                  <Typography>No holdings in portfolio</Typography>
+                ) : isSmallScreen ? (
+                  // Mobile — render each record in a single responsive row
+                  <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.25 }}>
+                    <Stack spacing={0.75} sx={{ minHeight: 0 }}>
+                      {portfolio.map((row, index) => (
+                        <Card key={index} variant="outlined">
+                          <CardContent sx={{ px: 0.75, py: 0.6, '&:last-child': { pb: 0.6 } }}>
+                            <Box
+                              sx={{
+                                display: 'grid',
+                                gridTemplateColumns: '0.9fr 0.9fr 1fr 1fr 1.8fr',
+                                columnGap: 0.4,
+                                alignItems: 'center',
+                                width: '100%',
+                              }}
+                            >
+                              <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>
+                                {row.ticker}
+                              </Typography>
+                              <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
+                                {formatQuantity(row.quantity)}
+                              </Typography>
+                              <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
+                                ${row.totalcost}
+                              </Typography>
+                              {(() => {
+                                const pnl = getUnrealized(row);
+                                const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
+                                const pnlText = pnl === null ? '—' : formatCurrency(pnl);
+                                return (
+                                  <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25, color: pnlColor }}>
+                                    {pnlText}
+                                  </Typography>
+                                );
+                              })()}
+                              <Typography sx={{ fontSize: '0.64rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
+                                {formatDateLocalCompact(row.lasttransactiondate)}
+                              </Typography>
+                            </Box>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  </Box>
+                ) : (
+                  // Desktop/tablet view with horizontal scroll fallback
+                  <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%', flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                    <Table size="small" sx={{ width: '100%', tableLayout: 'auto' }}>
+                      <TableHead>
+                        <TableRow>
+                          <StyledTableCell>Ticker</StyledTableCell>
+                          <StyledTableCell align="right">Quantity</StyledTableCell>
+                          <StyledTableCell align="right">Total Cost</StyledTableCell>
+                          <StyledTableCell align="right">Unrealized P/L</StyledTableCell>
+                          <StyledTableCell>Last Transaction Date</StyledTableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {portfolio.map((row, index) => (
+                          <TableRow key={index}>
+                            <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>{row.ticker}</TableCell>
+                            <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>{formatQuantity(row.quantity)}</TableCell>
+                            <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>${row.totalcost}</TableCell>
                             {(() => {
                               const pnl = getUnrealized(row);
                               const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
                               const pnlText = pnl === null ? '—' : formatCurrency(pnl);
                               return (
-                                <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25, color: pnlColor }}>
+                                <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75, color: pnlColor }}>
                                   {pnlText}
-                                </Typography>
+                                </TableCell>
                               );
                             })()}
-                            <Typography sx={{ fontSize: '0.64rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
-                              {formatDateLocalCompact(row.lasttransactiondate)}
-                            </Typography>
-                          </Box>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </Stack>
-                </Box>
-              ) : (
-                // Desktop/tablet view with horizontal scroll fallback
-                <TableContainer component={Paper} sx={{ overflowX: 'auto', maxWidth: '100%', flex: 1, minHeight: 0, overflowY: 'auto' }}>
-                  <Table size="small" sx={{ width: '100%', tableLayout: 'auto' }}>
-                    <TableHead>
-                      <TableRow>
-                        <StyledTableCell>Ticker</StyledTableCell>
-                        <StyledTableCell align="right">Quantity</StyledTableCell>
-                        <StyledTableCell align="right">Total Cost</StyledTableCell>
-                        <StyledTableCell align="right">Unrealized P/L</StyledTableCell>
-                        <StyledTableCell>Last Transaction Date</StyledTableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {portfolio.map((row, index) => (
-                        <TableRow key={index}>
-                          <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>{row.ticker}</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>{formatQuantity(row.quantity)}</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>${row.totalcost}</TableCell>
-                          {(() => {
-                            const pnl = getUnrealized(row);
-                            const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
-                            const pnlText = pnl === null ? '—' : formatCurrency(pnl);
-                            return (
-                              <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75, color: pnlColor }}>
-                                {pnlText}
-                              </TableCell>
-                            );
-                          })()}
-                          <TableCell sx={{ whiteSpace: 'nowrap', py: 0.75, fontSize: '0.75rem' }}>
-                            {formatDateUtcShort(row.lasttransactiondate)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid size={{ xs: 12, md: 5 }} order={{ xs: 2, md: 2 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <Card>
-              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
-                <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
-                  Buy / Sell Stock
-                </Typography>
-                <ToggleButtonGroup
-                  value={action}
-                  exclusive
-                  onChange={(e, newAction) => newAction && setAction(newAction)}
-                  size="small"
-                  sx={{ mb: 0.75 }}
-                >
-                  <ToggleButton value="buy" color="success">Buy</ToggleButton>
-                  <ToggleButton value="sell" color="error">Sell</ToggleButton>
-                </ToggleButtonGroup>
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Symbol"
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value)}
-                  sx={{ mb: 0.75 }}
-                />
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Quantity"
-                  type="number"
-                  value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
-                  sx={{ mb: 0.75 }}
-                />
-                <Button size="small" variant="contained" onClick={handleProceed} fullWidth disabled={isLoadingPrice || isSubmittingOrder}>
-                  {isLoadingPrice ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Fetching price...</>) : 'Proceed'}
-                </Button>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
-                <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
-                  Save Portfolio
-                </Typography>
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Filename (CSV)"
-                  value={saveFile}
-                  onChange={(e) => setSaveFile(e.target.value)}
-                  sx={{ mb: 0.75 }}
-                />
-                <Button size="small" variant="contained" onClick={handleSave} fullWidth disabled={isSaving}>
-                  {isSaving ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Saving...</>) : 'Save'}
-                </Button>
-                {savedFileUrl && (
-                  <Box sx={{ mt: 1, textAlign: 'center' }}>
-                    <Button href={savedFileUrl} target="_blank" rel="noopener" size="small">Download saved CSV</Button>
-                  </Box>
+                            <TableCell sx={{ whiteSpace: 'nowrap', py: 0.75, fontSize: '0.75rem' }}>
+                              {formatDateUtcShort(row.lasttransactiondate)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
                 )}
               </CardContent>
             </Card>
-          </Box>
+          </Grid>
+          <Grid size={{ xs: 12, md: 5 }} order={{ xs: 2, md: 2 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <Card>
+                <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                  <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                    Buy / Sell Stock
+                  </Typography>
+                  <ToggleButtonGroup
+                    value={action}
+                    exclusive
+                    onChange={(e, newAction) => newAction && setAction(newAction)}
+                    size="small"
+                    sx={{ mb: 0.75 }}
+                  >
+                    <ToggleButton value="buy" color="success">Buy</ToggleButton>
+                    <ToggleButton value="sell" color="error">Sell</ToggleButton>
+                  </ToggleButtonGroup>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Symbol"
+                    value={symbol}
+                    onChange={(e) => setSymbol(e.target.value)}
+                    sx={{ mb: 0.75 }}
+                  />
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Quantity"
+                    type="number"
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    sx={{ mb: 0.75 }}
+                  />
+                  <Button size="small" variant="contained" onClick={handleProceed} fullWidth disabled={isLoadingPrice || isSubmittingOrder}>
+                    {isLoadingPrice ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Fetching price...</>) : 'Proceed'}
+                  </Button>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                  <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                    Save Portfolio
+                  </Typography>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Filename (CSV)"
+                    value={saveFile}
+                    onChange={(e) => setSaveFile(e.target.value)}
+                    sx={{ mb: 0.75 }}
+                  />
+                  <Button size="small" variant="contained" onClick={handleSave} fullWidth disabled={isSaving}>
+                    {isSaving ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Saving...</>) : 'Save'}
+                  </Button>
+                  {savedFileUrl && (
+                    <Box sx={{ mt: 1, textAlign: 'center' }}>
+                      <Button href={savedFileUrl} target="_blank" rel="noopener" size="small">Download saved CSV</Button>
+                    </Box>
+                  )}
+                </CardContent>
+              </Card>
+            </Box>
+          </Grid>
         </Grid>
-      </Grid>
+      )}
+
+
+      {activeTab === 1 && (
+        <Card>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+              Tyche AI Advisor
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              Prototype: generates a JSON plan using your portfolio, profile, horizon, and market notes.
+            </Typography>
+            <Grid container spacing={1.5}>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <TextField
+                  label="Age"
+                  type="number"
+                  size="small"
+                  fullWidth
+                  value={advisorAge}
+                  onChange={(e) => setAdvisorAge(e.target.value)}
+                  sx={{ mb: 1 }}
+                />
+                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                  <InputLabel>Risk Profile</InputLabel>
+                  <Select value={advisorRisk} label="Risk Profile" onChange={(e) => setAdvisorRisk(e.target.value)}>
+                    <MenuItem value="Conservative">Conservative</MenuItem>
+                    <MenuItem value="Balanced">Balanced</MenuItem>
+                    <MenuItem value="Aggressive">Aggressive</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                  <InputLabel>Risk Appetite</InputLabel>
+                  <Select value={advisorAppetite} label="Risk Appetite" onChange={(e) => setAdvisorAppetite(e.target.value)}>
+                    <MenuItem value="Low">Low</MenuItem>
+                    <MenuItem value="Medium">Medium</MenuItem>
+                    <MenuItem value="High">High</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                  <InputLabel>Horizon</InputLabel>
+                  <Select value={advisorHorizon} label="Horizon" onChange={(e) => setAdvisorHorizon(e.target.value)}>
+                    <MenuItem value="Short">Short</MenuItem>
+                    <MenuItem value="Medium">Medium</MenuItem>
+                    <MenuItem value="Long">Long</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  label="Market Notes"
+                  multiline
+                  minRows={3}
+                  size="small"
+                  fullWidth
+                  value={advisorNotes}
+                  onChange={(e) => setAdvisorNotes(e.target.value)}
+                />
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={handleAdvisorGenerate}
+                  disabled={advisorLoading}
+                  sx={{ mt: 1 }}
+                >
+                  {advisorLoading ? 'Generating...' : 'Ask Tyche AI Advisor'}
+                </Button>
+              </Grid>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  Recommendations
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                  <Button size="small" variant="outlined" onClick={() => setAdvisorAll(true)} disabled={!advisorRecs.length}>Select all</Button>
+                  <Button size="small" variant="outlined" onClick={() => setAdvisorAll(false)} disabled={!advisorRecs.length}>Deselect all</Button>
+                </Box>
+                <Box sx={{ maxHeight: 220, overflowY: 'auto', pr: 0.5 }}>
+                  {advisorRecs.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">No recommendations yet.</Typography>
+                  ) : (
+                    advisorRecs.map((rec) => (
+                      <Box key={rec.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                        <FormControlLabel
+                          control={<Checkbox size="small" checked={!!advisorSelected[rec.id]} onChange={() => toggleAdvisorSelect(rec.id)} />}
+                          label={`${rec.action} ${rec.symbol} x${rec.quantity}`}
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {Math.round(rec.confidence * 100)}%
+                        </Typography>
+                      </Box>
+                    ))
+                  )}
+                </Box>
+                {advisorRecs.length > 0 && (
+                  <Typography variant="caption" color="text.secondary">
+                    Selected: {Object.values(advisorSelected).filter(Boolean).length}
+                  </Typography>
+                )}
+              </Grid>
+              <Grid size={{ xs: 12, md: 4 }}>
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  JSON Response
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 1, maxHeight: 240, overflow: 'auto', backgroundColor: '#f8fbff' }}>
+                  <pre style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap' }}>{advisorJson || '{ }'}</pre>
+                </Paper>
+              </Grid>
+            </Grid>
+          </CardContent>
+        </Card>
+      )}
 
       <Dialog open={dialogOpen} onClose={handleCancel}>
         <DialogTitle>Confirm {action.charAt(0).toUpperCase() + action.slice(1)}</DialogTitle>

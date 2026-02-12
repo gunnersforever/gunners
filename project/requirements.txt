@@ -11,3 +11,4 @@ alembic
 passlib[bcrypt]
 bcrypt
 pytest
+google-generativeai

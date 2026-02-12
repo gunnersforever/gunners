@@ -17,3 +17,6 @@ frontend/node_modules/
 # Ignore test CSVs generated during runtime
 Test*.csv
 .vscode/
+# Environment variables with secrets
+.env
+.env.local

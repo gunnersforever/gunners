@@ -5,6 +5,7 @@ import csv
 import io
 import os
 import logging
+import json
 from .portfolio_manager import retrieve_portfolio, write_portfolio, buy_ticker, sell_ticker, check_file_is_csv, get_ticker_price
 
 logging.basicConfig(level=logging.INFO)
@@ -473,3 +474,59 @@ def get_portfolio_file(filename: str):
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(full_path, media_type='text/csv', filename=filename)
+
+
+@app.post("/gemini/advise")
+def gemini_advise(request: dict):
+    """Call Gemini API for investment advisor recommendations."""
+    try:
+        prompt = request.get('prompt')
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+        
+        # Get Gemini API key from environment
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel('models/gemini-2.5-flash')
+        response = model.generate_content(prompt)
+        
+        if not response or not response.text:
+            raise HTTPException(status_code=500, detail="No response from Gemini API")
+        
+        # Parse the response as JSON
+        response_text = response.text
+        
+        # Try to extract JSON from the response
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        
+        if json_start == -1 or json_end == 0:
+            # If no JSON found, return the raw text
+            return {
+                "recommendations": [],
+                "raw_response": response_text
+            }
+        
+        json_str = response_text[json_start:json_end]
+        data = json.loads(json_str)
+        recs = data.get('recommendations') if isinstance(data, dict) else None
+        if isinstance(recs, list):
+            for rec in recs:
+                if isinstance(rec, dict) and 'symbol' not in rec and 'ticker' in rec:
+                    rec['symbol'] = rec.get('ticker')
+
+        return data
+    except json.JSONDecodeError as e:
+        logging.error("JSON parse error: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to parse Gemini response: {str(e)}")
+    except ImportError:
+        logging.error("google-generativeai not installed")
+        raise HTTPException(status_code=500, detail="Gemini API library not installed. Run: pip install google-generativeai")
+    except Exception as e:
+        logging.error("Gemini API error: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")

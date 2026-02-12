@@ -55,6 +55,9 @@ dev:
 dev-stop:
 	-@echo "Stopping backend uvicorn (if running)..."
 	-@pkill -f "uvicorn project.api:app" || true
+	-@echo "Stopping frontend Vite dev server (if running)..."
+	-@pkill -f "vite" || true
+	-@pkill -f "npm run dev" || true
 	-@rm -f backend.log
 
 setup:

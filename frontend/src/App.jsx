@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import logoLong from '../img/Tyche TPM Long Logo.jpeg';
 import logoShort from '../img/Tyche TPM Small Logo.jpeg';
 // NOTE: minor whitespace/comment to trigger reparse by Vite
@@ -32,6 +32,7 @@ import {
   DialogContentText,
   DialogActions,
   Checkbox,
+  Switch,
   FormControl,
   InputLabel,
   MenuItem,
@@ -94,25 +95,37 @@ function App() {
 
   const theme = useTheme();
   const { mode, setMode } = useColorScheme();
+  const themeHydratedRef = useRef(false);
+  const themeUserChangedRef = useRef(false);
   const isSmallScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const portfolioCardHeight = isSmallScreen ? '250px' : 'min(60vh, 560px)';
   const currentThemeMode = mode || 'light';
 
   useEffect(() => {
+    let isActive = true;
     void (async () => {
       try {
         const { getThemeMode, fetchPreferences } = await import('./api');
         const stored = getThemeMode();
+        if (!isActive || themeUserChangedRef.current) return;
         if (stored) {
           setMode(stored);
+          themeHydratedRef.current = true;
           return;
         }
         const prefs = await fetchPreferences();
+        if (!isActive || themeUserChangedRef.current) return;
         setMode(prefs.theme_mode || 'light');
+        themeHydratedRef.current = true;
       } catch {
+        if (!isActive || themeUserChangedRef.current) return;
         setMode('light');
+        themeHydratedRef.current = true;
       }
     })();
+    return () => {
+      isActive = false;
+    };
   }, [setMode]);
 
   useEffect(() => {
@@ -193,6 +206,18 @@ function App() {
     setSnackbarMessage(msg);
     setSnackbarSeverity(severity);
     setSnackbarOpen(true);
+  };
+
+  const handleThemeToggle = async (nextMode) => {
+    themeUserChangedRef.current = true;
+    setMode(nextMode);
+    try {
+      const { updatePreferences, setThemeMode: persistTheme } = await import('./api');
+      await updatePreferences({ theme_mode: nextMode });
+      persistTheme(nextMode);
+    } catch (err) {
+      handleShowSnackbar(err.message || 'Failed to save preference', 'error');
+    }
   };
 
   const horizonDurations = {
@@ -849,9 +874,9 @@ Return ONLY valid JSON with this structure:
         variant="scrollable"
         allowScrollButtonsMobile
       >
-        <Tab label="My Portfolio" />
-        <Tab label="Tyche AI Advisor" />
-        <Tab label="Preference" />
+        <Tab label={isSmallScreen ? 'Portfolio' : 'My Portfolio'} />
+        <Tab label={isSmallScreen ? 'Advisor' : 'Tyche AI Advisor'} />
+        <Tab label={isSmallScreen ? 'Prefs' : 'Preference'} />
       </Tabs>
 
       {activeTab === 0 && (
@@ -1237,7 +1262,7 @@ Return ONLY valid JSON with this structure:
                               borderRadius: 1,
                               border: '1px solid',
                               borderColor: 'divider',
-                              backgroundColor: 'white',
+                              backgroundColor: 'var(--card-bg)',
                             }}
                           >
                             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1272,26 +1297,15 @@ Return ONLY valid JSON with this structure:
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               Choose a display mode. Changes are saved automatically.
             </Typography>
-            <ToggleButtonGroup
-              value={currentThemeMode}
-              exclusive
-              onChange={async (_, value) => {
-                if (!value) return;
-                setMode(value);
-                try {
-                  const { updatePreferences, setThemeMode: persistTheme } = await import('./api');
-                  await updatePreferences({ theme_mode: value });
-                  persistTheme(value);
-                } catch (err) {
-                  handleShowSnackbar(err.message || 'Failed to save preference', 'error');
-                }
-              }}
-              size="small"
-              sx={{ mb: 1 }}
-            >
-              <ToggleButton value="light">Light</ToggleButton>
-              <ToggleButton value="dark">Dark</ToggleButton>
-            </ToggleButtonGroup>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="body2">Light</Typography>
+              <Switch
+                checked={currentThemeMode === 'dark'}
+                onChange={(event) => handleThemeToggle(event.target.checked ? 'dark' : 'light')}
+                inputProps={{ 'aria-label': 'Toggle dark mode' }}
+              />
+              <Typography variant="body2">Dark</Typography>
+            </Box>
           </CardContent>
         </Card>
       )}

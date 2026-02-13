@@ -5,7 +5,7 @@ import React from 'react';
 import App from './App';
 
 beforeEach(() => {
-  global.fetch = vi.fn();
+  globalThis.fetch = vi.fn();
 });
 
 afterEach(() => {
@@ -29,7 +29,7 @@ test('shows error when /api/portfolio/reset returns non-ok and does not crash', 
   render(<App />);
 
   // perform login first (login screen is initial)
-  global.fetch = makeQueuedFetch([
+  globalThis.fetch = makeQueuedFetch([
     { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) },
   ]);
   await userEvent.type(screen.getByLabelText(/Username/), 'u');
@@ -40,7 +40,7 @@ test('shows error when /api/portfolio/reset returns non-ok and does not crash', 
   await screen.findByText(/Choose an Option/i);
 
   // Setup next fetch (portfolio reset) to return non-ok
-  global.fetch = makeQueuedFetch([
+  globalThis.fetch = makeQueuedFetch([
     { ok: false, status: 401, json: async () => ({ detail: 'Authorization required' }) },
   ]);
 
@@ -53,7 +53,7 @@ test('shows error when /api/portfolio/reset returns non-ok and does not crash', 
 test('renders empty portfolio when backend returns ok with empty list', async () => {
   render(<App />);
   // perform login first
-  global.fetch = makeQueuedFetch([
+  globalThis.fetch = makeQueuedFetch([
     { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) },
   ]);
   await userEvent.type(screen.getByLabelText(/Username/), 'u');
@@ -62,7 +62,7 @@ test('renders empty portfolio when backend returns ok with empty list', async ()
   await screen.findByText(/Choose an Option/i);
 
   // portfolio reset returns empty ok
-  global.fetch = makeQueuedFetch([
+  globalThis.fetch = makeQueuedFetch([
     { ok: true, status: 200, json: async () => ({ message: 'Started new portfolio', portfolio: [] }) },
   ]);
 
@@ -77,7 +77,7 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   render(<App />);
 
   const mockOk = (payload) => ({ ok: true, status: 200, json: async () => payload });
-  global.fetch = makeQueuedFetch([
+  globalThis.fetch = makeQueuedFetch([
     mockOk({ access_token: 'a', refresh_token: 'r' }),
     mockOk({ message: 'Started new portfolio', portfolio: [] }),
     mockOk({

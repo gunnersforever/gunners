@@ -4,17 +4,37 @@
   font-weight: 400;
   color: #0f2542;
   background-color: #e3f2fd;
+  color-scheme: light;
+  --app-bg: #e3f2fd;
+  --app-text: #0f2542;
+  --card-bg: #ffffff;
+  --soft-bg: #f8fbff;
+  --soft-bg-alt: #f3f6fb;
+  --border-muted: #d7e3f3;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  color: #e3f2fd;
+  background-color: #0b1726;
+  --app-bg: #0b1726;
+  --app-text: #e3f2fd;
+  --card-bg: #111f33;
+  --soft-bg: #12233a;
+  --soft-bg-alt: #1a2c45;
+  --border-muted: #203550;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background-color: #e3f2fd;
+  background-color: var(--app-bg);
+  color: var(--app-text);
 }
 
 input[type="file"] {

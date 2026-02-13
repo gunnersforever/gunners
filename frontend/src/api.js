@@ -2,6 +2,7 @@
 const ACCESS_KEY = 'gunners_access_token';
 const REFRESH_KEY = 'gunners_refresh_token';
 const USER_KEY = 'gunners_user';
+const THEME_KEY = 'gunners_theme_mode';
 
 export function getAccessToken() {
   return localStorage.getItem(ACCESS_KEY) || '';
@@ -13,11 +14,20 @@ export function clearTokens() {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(THEME_KEY);
 }
 export function setTokens(access, refresh, username) {
   if (access) localStorage.setItem(ACCESS_KEY, access);
   if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
   if (username) localStorage.setItem(USER_KEY, username);
+}
+
+export function setThemeMode(themeMode) {
+  if (themeMode) localStorage.setItem(THEME_KEY, themeMode);
+}
+
+export function getThemeMode() {
+  return localStorage.getItem(THEME_KEY) || '';
 }
 export function getUsername() {
   return localStorage.getItem(USER_KEY) || '';
@@ -35,8 +45,8 @@ export async function refreshToken() {
       setTokens(data.access_token, data.refresh_token, getUsername());
       return true;
     }
-  } catch (err) {
-    /* ignore */
+  } catch {
+    return false;
   }
   return false;
 }
@@ -68,16 +78,41 @@ export async function loginUser(username, password) {
     }
     const data = await response.json();
     setTokens(data.access_token, data.refresh_token, username);
-    return { ok: true, username, portfolios: data.portfolios || [], active: data.active };
+    if (data.theme_mode) setThemeMode(data.theme_mode);
+    return { ok: true, username, portfolios: data.portfolios || [], active: data.active, theme_mode: data.theme_mode };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 }
 
+export async function fetchPreferences() {
+  const response = await authFetch('/api/user/preferences');
+  if (!response.ok) return { theme_mode: 'light' };
+  const data = await response.json().catch(() => null);
+  return { theme_mode: (data && data.theme_mode) || 'light' };
+}
+
+export async function updatePreferences(preferences) {
+  const response = await authFetch('/api/user/preferences', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(preferences || {}),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data && data.detail ? data.detail : `Server responded ${response.status}`);
+  }
+  const data = await response.json().catch(() => null);
+  if (data && data.theme_mode) setThemeMode(data.theme_mode);
+  return data;
+}
+
 export async function logoutUser() {
   try {
     await authFetch('/api/logout', { method: 'POST' }).catch(() => {});
-  } catch (e) {}
+  } catch {
+    return;
+  }
   clearTokens();
 }
 
@@ -105,7 +140,7 @@ export async function fetchPortfolioFromApi() {
     }
     const data = await response.json().catch(() => null);
     return { portfolio: (data && data.portfolio) || [], error: '' };
-  } catch (err) {
+  } catch {
     return { portfolio: [], error: 'Failed to fetch portfolio' };
   }
 }

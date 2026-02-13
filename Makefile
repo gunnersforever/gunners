@@ -1,5 +1,5 @@
 # Makefile convenience targets for DB migrations and dev
-DBURL ?= sqlite:///./project/gunners.db
+DBURL ?= sqlite:///./gunners.db
 HOST ?= 0.0.0.0
 PORT ?= 8000
 FRONTEND_PORT ?= 5173
@@ -7,7 +7,7 @@ FRONTEND_PORT ?= 5173
 .PHONY: db-upgrade db-downgrade db-revision db-head init-db ensure-db
 
 db-upgrade:
-	DATABASE_URL=$(DBURL) alembic upgrade head
+	DATABASE_URL=$(DBURL) alembic upgrade heads
 
 db-downgrade:
 	DATABASE_URL=$(DBURL) alembic downgrade -1
@@ -49,7 +49,9 @@ preview-frontend:
 
 dev:
 	@echo "Starting backend (background) and frontend (foreground)..."
-	@DATABASE_URL=$(DBURL) nohup uvicorn project.api:app --reload --host $(HOST) --port $(PORT) > backend.log 2>&1 & \
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
+	$(MAKE) db-upgrade; \
+	DATABASE_URL=$(DBURL) nohup uvicorn project.api:app --reload --host $(HOST) --port $(PORT) > backend.log 2>&1 & \
 	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT) < /dev/null
 
 dev-stop:

@@ -9,6 +9,7 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     active_portfolio = Column(String, nullable=True)
+    theme_mode = Column(String, nullable=False, default='light')
 
     portfolios = relationship('Portfolio', back_populates='owner', cascade='all, delete-orphan')
     sessions = relationship('SessionToken', back_populates='user', cascade='all, delete-orphan')

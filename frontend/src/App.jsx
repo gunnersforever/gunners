@@ -20,6 +20,8 @@ import {
   Alert,
   Snackbar,
   CircularProgress,
+  LinearProgress,
+  Skeleton,
   Card,
   CardContent,
   ToggleButton,
@@ -31,15 +33,15 @@ import {
   DialogActions,
   Checkbox,
   FormControl,
-  FormControlLabel,
   InputLabel,
   MenuItem,
   Select,
-  TextareaAutosize,
   Tabs,
   Tab,
 } from '@mui/material';
-import { styled } from '@mui/material/styles';
+import { styled, useColorScheme } from '@mui/material/styles';
+import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
+import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 
 const StyledTableCell = styled(TableCell)(({ theme }) => ({
   '&.MuiTableCell-head': {
@@ -50,7 +52,6 @@ const StyledTableCell = styled(TableCell)(({ theme }) => ({
 
 function App() {
   const [portfolio, setPortfolio] = useState([]);
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   // show login first (landing)
   const [screen, setScreen] = useState('login');
@@ -77,38 +78,75 @@ function App() {
   const [advisorRisk, setAdvisorRisk] = useState('Balanced');
   const [advisorAppetite, setAdvisorAppetite] = useState('Medium');
   const [advisorHorizon, setAdvisorHorizon] = useState('Medium');
-  const [advisorNotes, setAdvisorNotes] = useState('');
   const [advisorLoading, setAdvisorLoading] = useState(false);
-  const [advisorJson, setAdvisorJson] = useState('');
+  const [advisorElapsed, setAdvisorElapsed] = useState(0);
   const [advisorRecs, setAdvisorRecs] = useState([]);
   const [advisorSelected, setAdvisorSelected] = useState({});
+  const [advisorSubmitQueue, setAdvisorSubmitQueue] = useState([]);
+  const [advisorSubmitIndex, setAdvisorSubmitIndex] = useState(0);
+  const [advisorSubmitActive, setAdvisorSubmitActive] = useState(false);
+  const [advisorCompleted, setAdvisorCompleted] = useState({});
+  const [advisorInputsCollapsed, setAdvisorInputsCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
 
   // Use a dev proxy path so browser requests go through Vite -> backend and avoid CORS/network issues
   const API_BASE = '/api'; // proxied to http://127.0.0.1:8000 by vite.config.js
 
   const theme = useTheme();
+  const { mode, setMode } = useColorScheme();
   const isSmallScreen = useMediaQuery(theme.breakpoints.down('sm'));
-  const isMediumDown = useMediaQuery(theme.breakpoints.down('md'));
-  const portfolioMaxHeight = isSmallScreen
-    ? '45vh'
-    : isMediumDown
-      ? 'min(46vh, 420px)'
-      : 'min(52vh, 520px)';
   const portfolioCardHeight = isSmallScreen ? '250px' : 'min(60vh, 560px)';
+  const currentThemeMode = mode || 'light';
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { getThemeMode, fetchPreferences } = await import('./api');
+        const stored = getThemeMode();
+        if (stored) {
+          setMode(stored);
+          return;
+        }
+        const prefs = await fetchPreferences();
+        setMode(prefs.theme_mode || 'light');
+      } catch {
+        setMode('light');
+      }
+    })();
+  }, [setMode]);
 
   useEffect(() => {
     if (screen === 'load') {
       setPortfolio([]);
     }
     // load stored username
-    const u = (async () => {
+    void (async () => {
       try {
         const { getUsername } = await import('./api');
         setLoggedInUser(getUsername());
-      } catch (e) {}
+      } catch {
+        return;
+      }
     })();
   }, [screen]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', currentThemeMode);
+  }, [currentThemeMode]);
+
+
+  useEffect(() => {
+    if (!advisorLoading) {
+      setAdvisorElapsed(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const intervalId = setInterval(() => {
+      setAdvisorElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(intervalId);
+  }, [advisorLoading]);
+
 
   const getPortfolioSymbols = (rows) => Array.from(
     new Set(
@@ -138,7 +176,7 @@ function App() {
         return acc;
       }, {});
       setPriceMap((prev) => (merge ? { ...prev, ...nextMap } : nextMap));
-    } catch (err) {
+    } catch {
       if (!merge) setPriceMap({});
     }
   };
@@ -149,7 +187,7 @@ function App() {
     if (Object.keys(priceMap).length > 0) return;
     const symbols = getPortfolioSymbols(portfolio);
     refreshPricesForSymbols(symbols, { merge: false });
-  }, [screen]);
+  }, [screen, portfolio, priceMap]);
 
   const handleShowSnackbar = (msg, severity = 'success') => {
     setSnackbarMessage(msg);
@@ -157,120 +195,90 @@ function App() {
     setSnackbarOpen(true);
   };
 
-  const buildMockRecommendations = (rows, horizon) => {
-    const baseSymbols = rows.length
-      ? rows.map((row) => (row.ticker || row.symbol || '').toUpperCase()).filter(Boolean)
-      : ['AAPL', 'MSFT', 'TSLA', 'AMZN'];
-    const unique = Array.from(new Set(baseSymbols)).slice(0, 5);
-    return unique.map((symbol, index) => {
-      const action = index % 3 === 0 ? 'BUY' : index % 3 === 1 ? 'HOLD' : 'SELL';
-      const quantity = action === 'SELL' ? 5 : 10;
-      return {
-        id: `${symbol}-${index}`,
-        action,
-        symbol,
-        quantity,
-        horizon,
-        confidence: 0.62 + (index * 0.06),
-        rationale: `${action} recommendation based on portfolio balance and ${horizon.toLowerCase()} horizon.`,
-      };
-    });
+  const horizonDurations = {
+    Short: '3 to 12 months',
+    Medium: '1 to 3 years',
+    Long: '3 years and beyond',
   };
 
-    const horizonDurations = {
-      Short: '3 to 12 months',
-      Medium: '1 to 3 years',
-      Long: '3 years and beyond',
-    };
+  const handleAdvisorGenerateWithGemini = async () => {
+    if (!advisorAge || !advisorHorizon) {
+      handleShowSnackbar('Please enter age and select investment horizon', 'error');
+      return;
+    }
+    setAdvisorElapsed(0);
+    setAdvisorLoading(true);
+    try {
+      const { authFetch } = await import('./api');
+      const portfolioCsv = portfolio.length
+        ? `symbol,quantity,total_cost,avg_cost\n${portfolio.map((r) => `${r.ticker || r.symbol},"${r.quantity}","${r.totalcost}","${(Number(r.totalcost) / Number(r.quantity)).toFixed(2)}"`).join('\n')}`
+        : 'symbol,quantity,total_cost,avg_cost\n(empty portfolio)';
 
-    const handleAdvisorGenerateWithGemini = async () => {
-      if (!advisorAge || !advisorHorizon) {
-        handleShowSnackbar('Please enter age and select investment horizon', 'error');
-        return;
+      const prompt = `You are a professional financial advisor specializing in offering solid, non-biased, sector-neutral investment advices based on the age, risk profile, risk appetite, intended investment horizon and the existing portfolio (attached to this prompt) of the user. Your advice should also leverage publicly available market news and trend, giving a slight tilt towards risk adjusted low MER ETFs than individual stocks, avoiding any bespoke options strategies (covered call, protective put etc.). Your suggestion could be a mixture of selling some existing portfolio and buying some suggestive stocks in the view of balancing the potential outcome of the suggestions, in order to meet with the investment horizon, risk appetite, risk profile, age of the user.
+
+User Profile:
+- Age: ${advisorAge}
+- Risk Profile: ${advisorRisk}
+- Risk Appetite: ${advisorAppetite}
+- Investment Horizon: ${advisorHorizon} (${horizonDurations[advisorHorizon]})
+
+Existing Portfolio (CSV):
+${portfolioCsv}
+
+Confidence should be a number from 0 to 100.
+
+Return ONLY valid JSON with this structure:
+{
+  "recommendations": [
+    {
+      "action": "BUY" | "SELL" | "HOLD",
+      "symbol": "TICKER",
+      "quantity": number,
+      "confidence": number,
+      "rationale": "brief explanation"
+    }
+  ]
+}`;
+
+      const response = await authFetch(`${API_BASE}/gemini/advise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to fetch advisor recommendations');
       }
-      setAdvisorLoading(true);
+
+      const data = await response.json();
       try {
-        const { authFetch } = await import('./api');
-        const portfolioCsv = portfolio.length
-          ? `symbol,quantity,total_cost,avg_cost\n${portfolio.map((r) => `${r.ticker || r.symbol},"${r.quantity}","${r.totalcost}","${(Number(r.totalcost) / Number(r.quantity)).toFixed(2)}"`).join('\n')}`
-          : 'symbol,quantity,total_cost,avg_cost\n(empty portfolio)';
-
-        const prompt = `You are a professional financial advisor specializing in offering solid, non-biased, sector-neutral investment advices based on the age, risk profile, risk appetite, intended investment horizon and the existing portfolio (attached to this prompt) of the user. Your advice should also leverage publicly available market news and trend, giving a slight tilt towards risk adjusted low MER ETFs than individual stocks, avoiding any bespoke options strategies (covered call, protective put etc.). Your suggestion could be a mixture of selling some existing portfolio and buying some suggestive stocks in the view of balancing the potential outcome of the suggestions, in order to meet with the investment horizon, risk appetite, risk profile, age of the user.
-
-  User Profile:
-  - Age: ${advisorAge}
-  - Risk Profile: ${advisorRisk}
-  - Risk Appetite: ${advisorAppetite}
-  - Investment Horizon: ${advisorHorizon} (${horizonDurations[advisorHorizon]})
-  ${advisorNotes ? `- Market Notes: ${advisorNotes}` : ''}
-
-  Existing Portfolio (CSV):
-  ${portfolioCsv}
-
-  Please provide your recommendations in JSON format with the following structure for each recommendation:
-  {
-    "recommendations": [
-      {
-        "action": "BUY" | "SELL" | "HOLD",
-        "symbol": "TICKER",
-        "quantity": number,
-        "rationale": "brief explanation"
-      }
-    ]
-  }`;
-
-        const response = await authFetch(`${API_BASE}/gemini/advise`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
-        });
-
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.detail || 'Failed to fetch advisor recommendations');
-        }
-
-        const data = await response.json();
-        try {
-          const recs = data.recommendations || [];
-          const payload = {
-            profile: {
-              age: Number(advisorAge),
-              risk_profile: advisorRisk,
-              risk_appetite: advisorAppetite,
-              horizon: advisorHorizon,
-              horizon_duration: horizonDurations[advisorHorizon],
-            },
-            portfolio: portfolio.map((row) => ({
-              symbol: row.ticker || row.symbol || '',
-              quantity: row.quantity,
-              total_cost: row.totalcost,
-            })),
-            market_notes: advisorNotes,
-            recommendations: recs,
-          };
-          const selected = recs.reduce((acc, rec) => {
+        const recs = data.recommendations || [];
+        const selected = recs.reduce((acc, rec) => {
+          const action = String(rec.action || '').toUpperCase();
+          if (action === 'BUY' || action === 'SELL') {
             acc[`${rec.symbol}-${rec.action}`] = true;
-            return acc;
-          }, {});
-          setAdvisorRecs(recs.map((rec, idx) => ({
-            id: `${rec.symbol}-${rec.action}`,
-            ...rec,
-          })));
-          setAdvisorSelected(selected);
-          setAdvisorJson(JSON.stringify(data, null, 2));
-          handleShowSnackbar('Advisor recommendations loaded', 'success');
-        } catch (parseErr) {
-          console.error('Parse error:', parseErr);
-          handleShowSnackbar('Failed to parse recommendations', 'error');
-        }
-      } catch (err) {
-        console.error('Advisor error:', err);
-        handleShowSnackbar(err.message || 'Advisor request failed', 'error');
-      } finally {
-        setAdvisorLoading(false);
+          }
+          return acc;
+        }, {});
+        setAdvisorRecs(recs.map((rec) => ({
+          id: `${rec.symbol}-${rec.action}`,
+          ...rec,
+        })));
+        setAdvisorSelected(selected);
+        setAdvisorCompleted({});
+        handleShowSnackbar('Advisor recommendations loaded', 'success');
+      } catch (parseErr) {
+        console.error('Parse error:', parseErr);
+        handleShowSnackbar('Failed to parse recommendations', 'error');
       }
-    };
+    } catch (err) {
+      console.error('Advisor error:', err);
+      handleShowSnackbar(err.message || 'Advisor request failed', 'error');
+    } finally {
+      setAdvisorLoading(false);
+    }
+  };
   const handleAdvisorGenerate = () => {
     handleAdvisorGenerateWithGemini();
   };
@@ -279,8 +287,8 @@ function App() {
     setAdvisorSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const setAdvisorAll = (value) => {
-    const next = advisorRecs.reduce((acc, rec) => {
+  const setAdvisorAll = (value, recs) => {
+    const next = recs.reduce((acc, rec) => {
       acc[rec.id] = value;
       return acc;
     }, {});
@@ -328,37 +336,6 @@ function App() {
     });
   };
 
-  // Format an ISO UTC timestamp string into the user's local timezone in the
-  // format: YYYY-MMM-DD HH:mm:ss.SSS (e.g. 2026-FEB-04 20:54:08.234)
-  const formatDateLocal = (isoString) => {
-    if (!isoString) return '';
-    // Ensure 'T' separator and keep microseconds (server gives microseconds +00:00)
-    let s = isoString.replace(' ', 'T');
-    // If no timezone is present, assume UTC by appending +00:00
-    if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
-      s = s + '+00:00';
-    }
-    const d = new Date(s);
-    if (isNaN(d.getTime())) return isoString;
-      const pad = (n, len = 2) => String(n).padStart(len, '0');
-    const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    const year = d.getFullYear();
-    const month = months[d.getMonth()];
-    const day = pad(d.getDate());
-    const hour = pad(d.getHours());
-    const minute = pad(d.getMinutes());
-    const second = pad(d.getSeconds());
-    const ms = String(d.getMilliseconds()).padStart(3, '0');
-    // timezone offset in minutes (UTC offset)
-    const tzOffsetMin = -d.getTimezoneOffset(); // positive for UTC+
-    const tzSign = tzOffsetMin >= 0 ? '+' : '-';
-    const tzAbs = Math.abs(tzOffsetMin);
-    const tzHours = Math.floor(tzAbs / 60);
-    const tzMinutes = tzAbs % 60;
-    const tzStr = tzMinutes === 0 ? `UTC${tzSign}${tzHours}` : `UTC${tzSign}${tzHours}:${String(tzMinutes).padStart(2,'0')}`;
-    return `${year}-${month}-${day} ${hour}:${minute}:${second}.${ms} ${tzStr}`;
-  };
-
   const formatDateUtcShort = (isoString) => {
     if (!isoString) return '';
     let s = isoString.replace(' ', 'T');
@@ -380,6 +357,43 @@ function App() {
 
   const formatDateLocalCompact = (isoString) => formatDateUtcShort(isoString);
 
+  const actionableAdvisorRecs = advisorRecs.filter((rec) => {
+    const action = String(rec.action || '').toUpperCase();
+    return action === 'BUY' || action === 'SELL';
+  });
+  const showAdvisorResults = !advisorLoading && advisorRecs.length > 0;
+  const selectedAdvisorCount = actionableAdvisorRecs.filter((rec) => advisorSelected[rec.id] && !advisorCompleted[rec.id]).length;
+
+  useEffect(() => {
+    if (showAdvisorResults) {
+      setAdvisorInputsCollapsed(true);
+    }
+  }, [showAdvisorResults]);
+
+  const getHoldingQuantity = (recSymbol) => {
+    const target = String(recSymbol || '').trim().toUpperCase();
+    if (!target) return 0;
+    const total = portfolio.reduce((sum, row) => {
+      const symbolValue = String(row.ticker || row.symbol || '').trim().toUpperCase();
+      if (symbolValue !== target) return sum;
+      const qty = Number(row.quantity);
+      return sum + (Number.isFinite(qty) ? qty : 0);
+    }, 0);
+    return total;
+  };
+
+  const formatConfidencePercent = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    const percent = numeric <= 1 ? numeric * 100 : numeric;
+    return `${Math.round(percent)}%`;
+  };
+
+  const currentAdvisorRec = advisorSubmitQueue[advisorSubmitIndex];
+  const advisorSubmitProgress = advisorSubmitQueue.length > 0
+    ? Math.round(((advisorSubmitIndex + 1) / advisorSubmitQueue.length) * 100)
+    : 0;
+
   const handleFileLoad = async (event) => { 
     const file = event.target.files[0];
     if (!file) return;
@@ -399,7 +413,6 @@ function App() {
         const nextPortfolio = normalizePortfolioRows(data.portfolio || []);
         setPortfolio(nextPortfolio);
         refreshPricesForSymbols(getPortfolioSymbols(nextPortfolio), { merge: false });
-        setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Portfolio loaded', 'success');
         setScreen('main');
@@ -426,13 +439,11 @@ function App() {
     setQuantity('');
     setPrice(null);
     setError('');
-    setMessage('');
     try {
       const { authFetch } = await import('./api');
       const response = await authFetch(`${API_BASE}/portfolio/reset`, { method: 'POST' });
       const data = await response.json().catch(() => null);
       if (response.ok) {
-        setMessage(data && data.message ? data.message : 'Started new portfolio');
         handleShowSnackbar(data && data.message ? data.message : 'Started new portfolio', 'info');
         setScreen('main');
       } else {
@@ -445,22 +456,22 @@ function App() {
         }
         setScreen('main');
       }
-    } catch (err) {
+    } catch {
       setError('');
       setScreen('main');
     }
   };
 
-  const handleProceed = async () => {
-    if (!symbol || !quantity) {
+  const fetchPriceForOrder = async ({ nextAction, nextSymbol, nextQuantity }) => {
+    if (!nextSymbol || !nextQuantity) {
       setError('Please enter both symbol and quantity');
-      return;
+      return false;
     }
     setIsLoadingPrice(true);
     // Fetch price
     try {
-      console.log('Requesting price for', symbol);
-      const response = await fetch(`${API_BASE}/get_price?symbol=${symbol.toUpperCase()}`);
+      console.log('Requesting price for', nextSymbol);
+      const response = await fetch(`${API_BASE}/get_price?symbol=${nextSymbol.toUpperCase()}`);
       console.log('Price response', response);
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
@@ -469,16 +480,75 @@ function App() {
       }
       const data = await response.json();
       console.log('Price data', data);
+      setAction(nextAction);
+      setSymbol(nextSymbol);
+      setQuantity(nextQuantity);
       setPrice(data.price);
       setDialogOpen(true);
       setError('');
+      return true;
     } catch (err) {
       console.error(err);
       setError(err.message || 'Failed to fetch price');
       handleShowSnackbar(err.message || 'Failed to fetch price', 'error');
+      return false;
     } finally {
       setIsLoadingPrice(false);
     }
+  };
+
+  const handleProceed = async () => {
+    await fetchPriceForOrder({
+      nextAction: action,
+      nextSymbol: symbol,
+      nextQuantity: quantity,
+    });
+  };
+
+  const openAdvisorRecommendation = async (rec) => {
+    if (!rec) return;
+    const nextAction = String(rec.action || '').toLowerCase() === 'sell' ? 'sell' : 'buy';
+    const nextSymbol = String(rec.symbol || '').trim().toUpperCase();
+    const nextQuantity = String(rec.quantity ?? '').trim();
+    const ok = await fetchPriceForOrder({ nextAction, nextSymbol, nextQuantity });
+    if (!ok) {
+      setAdvisorSubmitActive(false);
+      setAdvisorSubmitQueue([]);
+      setAdvisorSubmitIndex(0);
+    }
+  };
+
+  const finishAdvisorSubmit = () => {
+    setAdvisorSubmitActive(false);
+    setAdvisorSubmitQueue([]);
+    setAdvisorSubmitIndex(0);
+    setActiveTab(0);
+    handleShowSnackbar('Advisor actions complete', 'success');
+  };
+
+  const advanceAdvisorSubmit = () => {
+    const nextIndex = advisorSubmitIndex + 1;
+    if (nextIndex >= advisorSubmitQueue.length) {
+      finishAdvisorSubmit();
+      return;
+    }
+    setAdvisorSubmitIndex(nextIndex);
+    void openAdvisorRecommendation(advisorSubmitQueue[nextIndex]);
+  };
+
+  const handleAdvisorSubmit = () => {
+    const queue = actionableAdvisorRecs.filter((rec) => advisorSelected[rec.id]);
+    if (queue.length === 0) return;
+    setAdvisorSubmitQueue(queue);
+    setAdvisorSubmitIndex(0);
+    setAdvisorSubmitActive(true);
+    void openAdvisorRecommendation(queue[0]);
+  };
+
+  const handleAdvisorSkip = () => {
+    setDialogOpen(false);
+    setPrice(null);
+    advanceAdvisorSubmit();
   };
 
   const handleConfirm = async () => {
@@ -504,12 +574,19 @@ function App() {
         if (refreshSymbol) {
           refreshPricesForSymbols([refreshSymbol], { merge: true });
         }
-        setMessage(data.message);
         setError('');
         handleShowSnackbar(data.message || 'Transaction completed', 'success');
         setSymbol('');
         setQuantity('');
         setPrice(null);
+        if (advisorSubmitActive) {
+          const completedRec = advisorSubmitQueue[advisorSubmitIndex];
+          if (completedRec) {
+            setAdvisorCompleted((prev) => ({ ...prev, [completedRec.id]: true }));
+            setAdvisorSelected((prev) => ({ ...prev, [completedRec.id]: false }));
+          }
+          advanceAdvisorSubmit();
+        }
       } else if (response.status === 401) {
         const detail = data && data.detail ? data.detail : 'Authentication required';
         setError(detail);
@@ -534,6 +611,11 @@ function App() {
   const handleCancel = () => {
     setDialogOpen(false);
     setPrice(null);
+    if (advisorSubmitActive) {
+      setAdvisorSubmitActive(false);
+      setAdvisorSubmitQueue([]);
+      setAdvisorSubmitIndex(0);
+    }
   };
 
   const handleSave = async () => {
@@ -580,7 +662,6 @@ function App() {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setMessage(`Prepared ${safeName}`);
       setError('');
       handleShowSnackbar('Download started', 'success');
       setSavedFileUrl('');
@@ -596,10 +677,10 @@ function App() {
   const handleLogout = async () => {
     const { logoutUser } = await import('./api');
     await logoutUser();
+    setMode('light');
     setLoggedInUser('');
     setPortfolio([]);
     setPriceMap({});
-    setMessage('Logged out');
     setError('');
     setSavedFileUrl('');
     setSaveFile('');
@@ -613,7 +694,7 @@ function App() {
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-          <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 28, maxWidth: '45%' }} />
+          <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 34, maxWidth: '45%' }} />
           {loggedInUser ? (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
@@ -649,7 +730,6 @@ function App() {
             </Button>
           </CardContent>
         </Card>
-        {message && <Alert severity="success" sx={{ mt: 2 }}>{message}</Alert>}
         {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
       </Container>
     );
@@ -671,7 +751,12 @@ function App() {
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
         <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
-          <Box component="img" src={logoLong} alt="Tyche TPM" sx={{ height: 56, maxWidth: '100%', objectFit: 'contain' }} />
+          <Box
+            component="img"
+            src={logoLong}
+            alt="Tyche TPM"
+            sx={{ width: 'min(410px, 90vw)', height: 'auto', maxWidth: '100%', objectFit: 'contain' }}
+          />
         </Box>
         <Card>
           <CardContent>
@@ -688,7 +773,20 @@ function App() {
                 if (!username || !password) { setError('Enter username and password'); return; }
                 const { loginUser } = await import('./api');
                 const res = await loginUser(username, password);
-                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Logged in'); setLoggedInUser(username); setPortfolio([]); setSavedFileUrl(''); setSaveFile(''); setSymbol(''); setQuantity(''); setPrice(null); setScreen('load'); }
+                if (!res.ok) {
+                  setError(res.error);
+                } else {
+                  if (res.theme_mode) setMode(res.theme_mode);
+                  setError('');
+                  setLoggedInUser(username);
+                  setPortfolio([]);
+                  setSavedFileUrl('');
+                  setSaveFile('');
+                  setSymbol('');
+                  setQuantity('');
+                  setPrice(null);
+                  setScreen('load');
+                }
               }}>
                 Login
               </Button>
@@ -699,7 +797,20 @@ function App() {
                 const r = await registerUser(username, password);
                 if (!r.ok) { setError(r.error); return; }
                 const res = await loginUser(username, password);
-                if (!res.ok) { setError(res.error); } else { setError(''); setMessage('Registered and logged in'); setLoggedInUser(username); setPortfolio([]); setSavedFileUrl(''); setSaveFile(''); setSymbol(''); setQuantity(''); setPrice(null); setScreen('load'); }
+                if (!res.ok) {
+                  setError(res.error);
+                } else {
+                  if (res.theme_mode) setMode(res.theme_mode);
+                  setError('');
+                  setLoggedInUser(username);
+                  setPortfolio([]);
+                  setSavedFileUrl('');
+                  setSaveFile('');
+                  setSymbol('');
+                  setQuantity('');
+                  setPrice(null);
+                  setScreen('load');
+                }
               }}>
                 Register
               </Button>
@@ -709,7 +820,6 @@ function App() {
             </Typography>
           </CardContent>
         </Card>
-        {message && <Alert severity="success" sx={{ mt: 2 }}>{message}</Alert>}
         {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
       </Container>
     );
@@ -718,7 +828,7 @@ function App() {
   return (
     <Container maxWidth="lg" sx={{ mt: 0.5, mb: 0.5 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-        <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 28, maxWidth: '35%' }} />
+        <Box component="img" src={logoShort} alt="Tyche TPM" sx={{ height: 34, maxWidth: '35%' }} />
         {loggedInUser ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <Typography variant="body2">Signed in as <strong>{loggedInUser}</strong></Typography>
@@ -730,7 +840,6 @@ function App() {
           <Button size="small" variant="outlined" onClick={() => setScreen('login')}>Login / Register</Button>
         )}
       </Box>
-      {message && <Alert severity="success" sx={{ mb: 1 }}>{message}</Alert>}
       {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
 
       <Tabs
@@ -742,6 +851,7 @@ function App() {
       >
         <Tab label="My Portfolio" />
         <Tab label="Tyche AI Advisor" />
+        <Tab label="Preference" />
       </Tabs>
 
       {activeTab === 0 && (
@@ -784,9 +894,18 @@ function App() {
                                 const pnlColor = pnl === null ? 'text.secondary' : pnl >= 0 ? 'success.main' : 'error.main';
                                 const pnlText = pnl === null ? '—' : formatCurrency(pnl);
                                 return (
-                                  <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25, color: pnlColor }}>
-                                    {pnlText}
-                                  </Typography>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.25 }}>
+                                    {pnl !== null && pnl !== 0 && (
+                                      pnl > 0 ? (
+                                        <ArrowDropUpIcon sx={{ fontSize: '1rem', color: 'success.main' }} />
+                                      ) : (
+                                        <ArrowDropDownIcon sx={{ fontSize: '1rem', color: 'error.main' }} />
+                                      )
+                                    )}
+                                    <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', color: pnlColor }}>
+                                      {pnlText}
+                                    </Typography>
+                                  </Box>
                                 );
                               })()}
                               <Typography sx={{ fontSize: '0.64rem', color: 'text.secondary', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', pl: 0.25 }}>
@@ -823,7 +942,18 @@ function App() {
                               const pnlText = pnl === null ? '—' : formatCurrency(pnl);
                               return (
                                 <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75, color: pnlColor }}>
-                                  {pnlText}
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.25 }}>
+                                    {pnl !== null && pnl !== 0 && (
+                                      pnl > 0 ? (
+                                        <ArrowDropUpIcon sx={{ fontSize: '1rem', color: 'success.main' }} />
+                                      ) : (
+                                        <ArrowDropDownIcon sx={{ fontSize: '1rem', color: 'error.main' }} />
+                                      )
+                                    )}
+                                    <Typography component="span" sx={{ fontSize: '0.75rem', color: pnlColor }}>
+                                      {pnlText}
+                                    </Typography>
+                                  </Box>
                                 </TableCell>
                               );
                             })()}
@@ -913,103 +1043,255 @@ function App() {
             <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
               Tyche AI Advisor
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              Prototype: generates a JSON plan using your portfolio, profile, horizon, and market notes.
-            </Typography>
             <Grid container spacing={1.5}>
-              <Grid size={{ xs: 12, md: 4 }}>
-                <TextField
-                  label="Age"
-                  type="number"
-                  size="small"
-                  fullWidth
-                  value={advisorAge}
-                  onChange={(e) => setAdvisorAge(e.target.value)}
-                  sx={{ mb: 1 }}
-                />
-                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
-                  <InputLabel>Risk Profile</InputLabel>
-                  <Select value={advisorRisk} label="Risk Profile" onChange={(e) => setAdvisorRisk(e.target.value)}>
-                    <MenuItem value="Conservative">Conservative</MenuItem>
-                    <MenuItem value="Balanced">Balanced</MenuItem>
-                    <MenuItem value="Aggressive">Aggressive</MenuItem>
-                  </Select>
-                </FormControl>
-                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
-                  <InputLabel>Risk Appetite</InputLabel>
-                  <Select value={advisorAppetite} label="Risk Appetite" onChange={(e) => setAdvisorAppetite(e.target.value)}>
-                    <MenuItem value="Low">Low</MenuItem>
-                    <MenuItem value="Medium">Medium</MenuItem>
-                    <MenuItem value="High">High</MenuItem>
-                  </Select>
-                </FormControl>
-                <FormControl fullWidth size="small" sx={{ mb: 1 }}>
-                  <InputLabel>Horizon</InputLabel>
-                  <Select value={advisorHorizon} label="Horizon" onChange={(e) => setAdvisorHorizon(e.target.value)}>
-                    <MenuItem value="Short">Short</MenuItem>
-                    <MenuItem value="Medium">Medium</MenuItem>
-                    <MenuItem value="Long">Long</MenuItem>
-                  </Select>
-                </FormControl>
-                <TextField
-                  label="Market Notes"
-                  multiline
-                  minRows={3}
-                  size="small"
-                  fullWidth
-                  value={advisorNotes}
-                  onChange={(e) => setAdvisorNotes(e.target.value)}
-                />
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={handleAdvisorGenerate}
-                  disabled={advisorLoading}
-                  sx={{ mt: 1 }}
-                >
-                  {advisorLoading ? 'Generating...' : 'Ask Tyche AI Advisor'}
-                </Button>
-              </Grid>
-              <Grid size={{ xs: 12, md: 4 }}>
-                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                  Recommendations
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                  <Button size="small" variant="outlined" onClick={() => setAdvisorAll(true)} disabled={!advisorRecs.length}>Select all</Button>
-                  <Button size="small" variant="outlined" onClick={() => setAdvisorAll(false)} disabled={!advisorRecs.length}>Deselect all</Button>
-                </Box>
-                <Box sx={{ maxHeight: 220, overflowY: 'auto', pr: 0.5 }}>
-                  {advisorRecs.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary">No recommendations yet.</Typography>
-                  ) : (
-                    advisorRecs.map((rec) => (
-                      <Box key={rec.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-                        <FormControlLabel
-                          control={<Checkbox size="small" checked={!!advisorSelected[rec.id]} onChange={() => toggleAdvisorSelect(rec.id)} />}
-                          label={`${rec.action} ${rec.symbol} x${rec.quantity}`}
-                        />
-                        <Typography variant="caption" color="text.secondary">
-                          {Math.round(rec.confidence * 100)}%
-                        </Typography>
+              {!advisorInputsCollapsed && (
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    label="Age"
+                    type="number"
+                    size="small"
+                    fullWidth
+                    value={advisorAge}
+                    onChange={(e) => setAdvisorAge(e.target.value)}
+                    sx={{ mb: 1 }}
+                  />
+                  <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                    <InputLabel>Risk Profile</InputLabel>
+                    <Select value={advisorRisk} label="Risk Profile" onChange={(e) => setAdvisorRisk(e.target.value)}>
+                      <MenuItem value="Conservative">Conservative</MenuItem>
+                      <MenuItem value="Balanced">Balanced</MenuItem>
+                      <MenuItem value="Aggressive">Aggressive</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                    <InputLabel>Risk Appetite</InputLabel>
+                    <Select value={advisorAppetite} label="Risk Appetite" onChange={(e) => setAdvisorAppetite(e.target.value)}>
+                      <MenuItem value="Low">Low</MenuItem>
+                      <MenuItem value="Medium">Medium</MenuItem>
+                      <MenuItem value="High">High</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <FormControl fullWidth size="small" sx={{ mb: 1 }}>
+                    <InputLabel>Horizon</InputLabel>
+                    <Select value={advisorHorizon} label="Horizon" onChange={(e) => setAdvisorHorizon(e.target.value)}>
+                      <MenuItem value="Short">Short</MenuItem>
+                      <MenuItem value="Medium">Medium</MenuItem>
+                      <MenuItem value="Long">Long</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <Box sx={{ display: 'flex', gap: 0.75, mt: 1, flexWrap: 'wrap' }}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={handleAdvisorGenerate}
+                      disabled={advisorLoading}
+                    >
+                      {advisorLoading ? (
+                        <>
+                          <CircularProgress size={16} sx={{ mr: 1 }} />Analyzing
+                          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                            {advisorElapsed}s
+                          </Typography>
+                        </>
+                      ) : 'Ask Tyche AI Advisor'}
+                    </Button>
+                    {(showAdvisorResults || advisorInputsCollapsed) && (
+                      <Button
+                        size="small"
+                        variant="text"
+                        onClick={() => setAdvisorInputsCollapsed(true)}
+                        sx={{ px: 1, py: 0.25, minWidth: 0 }}
+                      >
+                        Collapse inputs
+                      </Button>
+                    )}
+                  </Box>
+                </Grid>
+              )}
+              {advisorInputsCollapsed && (
+                <Grid size={{ xs: 12 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Profile: {advisorAge || '—'} · {advisorRisk} · {advisorAppetite} · {advisorHorizon}
+                    </Typography>
+                    {showAdvisorResults && (
+                      <Box sx={{ display: 'flex', gap: 1 }}>
+                        <Button size="small" variant="text" onClick={() => setAdvisorInputsCollapsed(false)} sx={{ px: 1, py: 0.25, minWidth: 0 }}>
+                          Expand inputs
+                        </Button>
                       </Box>
-                    ))
-                  )}
-                </Box>
-                {advisorRecs.length > 0 && (
-                  <Typography variant="caption" color="text.secondary">
-                    Selected: {Object.values(advisorSelected).filter(Boolean).length}
-                  </Typography>
-                )}
-              </Grid>
-              <Grid size={{ xs: 12, md: 4 }}>
-                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                  JSON Response
-                </Typography>
-                <Paper variant="outlined" sx={{ p: 1, maxHeight: 240, overflow: 'auto', backgroundColor: '#f8fbff' }}>
-                  <pre style={{ margin: 0, fontSize: '0.75rem', whiteSpace: 'pre-wrap' }}>{advisorJson || '{ }'}</pre>
-                </Paper>
-              </Grid>
+                    )}
+                  </Box>
+                </Grid>
+              )}
+              {showAdvisorResults && (
+                <>
+                  <Grid size={{ xs: 12, md: advisorInputsCollapsed ? 7 : 4 }}>
+                    <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                      Recommendations
+                    </Typography>
+                    {actionableAdvisorRecs.length > 0 && (
+                      <Box sx={{ display: 'flex', gap: 0.5, mb: 0.5, flexWrap: 'wrap' }}>
+                        <Button size="small" variant="text" onClick={() => setAdvisorAll(true, actionableAdvisorRecs)} sx={{ px: 1, py: 0.25, minWidth: 0 }}>
+                          Select all
+                        </Button>
+                        <Button size="small" variant="text" onClick={() => setAdvisorAll(false, actionableAdvisorRecs)} sx={{ px: 1, py: 0.25, minWidth: 0 }}>
+                          Clear
+                        </Button>
+                      </Box>
+                    )}
+                    <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 260, overflowY: 'auto' }}>
+                      <Table size="small" stickyHeader sx={{ tableLayout: 'fixed' }}>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontSize: '0.7rem', py: 0.5, width: '24%' }}>Buy/Sell</TableCell>
+                            <TableCell sx={{ fontSize: '0.7rem', py: 0.5, width: '16%' }}>Ticker</TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Rec Qty</TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Held Qty</TableCell>
+                            <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Conf %</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {actionableAdvisorRecs.map((rec) => (
+                            (() => {
+                              const isCompleted = !!advisorCompleted[rec.id];
+                              return (
+                            <TableRow key={rec.id}>
+                              <TableCell sx={{ py: 0.5 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Checkbox
+                                    size="small"
+                                    checked={!!advisorSelected[rec.id]}
+                                    onChange={() => toggleAdvisorSelect(rec.id)}
+                                    sx={{ p: 0.25 }}
+                                    disabled={isCompleted}
+                                  />
+                                  <Typography
+                                    variant="body2"
+                                    sx={{ fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}
+                                  >
+                                    {rec.action}
+                                  </Typography>
+                                </Box>
+                              </TableCell>
+                              <TableCell sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                {String(rec.symbol || '').toUpperCase()}
+                              </TableCell>
+                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                {rec.quantity ?? '—'}
+                              </TableCell>
+                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                {formatQuantity(getHoldingQuantity(rec.symbol))}
+                              </TableCell>
+                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                {formatConfidencePercent(rec.confidence)}
+                              </TableCell>
+                            </TableRow>
+                              );
+                            })()
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                    <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                      <Typography variant="caption" color="text.secondary">
+                        Selected: {selectedAdvisorCount}
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        onClick={handleAdvisorSubmit}
+                        disabled={selectedAdvisorCount === 0 || advisorSubmitActive}
+                      >
+                        Submit
+                      </Button>
+                    </Box>
+                  </Grid>
+                  <Grid size={{ xs: 12, md: advisorInputsCollapsed ? 5 : 4 }}>
+                    <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+                      Your Tyche's Advice
+                    </Typography>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 0.75,
+                        height: isSmallScreen ? 240 : 320,
+                        overflowY: 'auto',
+                        backgroundColor: 'var(--soft-bg)',
+                      }}
+                    >
+                      {advisorRecs.map((rec) => {
+                        const action = (rec.action || '').toUpperCase();
+                        const actionColor = action === 'BUY'
+                          ? 'success.main'
+                          : action === 'SELL'
+                            ? 'error.main'
+                            : 'text.secondary';
+                        const symbol = (rec.symbol || '').toUpperCase();
+                        return (
+                          <Box
+                            key={rec.id}
+                            sx={{
+                              mb: 1,
+                              p: 1,
+                              borderRadius: 1,
+                              border: '1px solid',
+                              borderColor: 'divider',
+                              backgroundColor: 'white',
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <Typography variant="subtitle2">{symbol || '—'}</Typography>
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: actionColor }}>
+                                {action || 'HOLD'}
+                              </Typography>
+                            </Box>
+                            <Box sx={{ mt: 0.75, p: 0.75, borderRadius: 1, backgroundColor: 'var(--soft-bg-alt)' }}>
+                              <Typography variant="body2">
+                                {rec.rationale || 'No reasoning provided.'}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        );
+                      })}
+                    </Paper>
+                  </Grid>
+                </>
+              )}
             </Grid>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === 2 && (
+        <Card>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+              Preference
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              Choose a display mode. Changes are saved automatically.
+            </Typography>
+            <ToggleButtonGroup
+              value={currentThemeMode}
+              exclusive
+              onChange={async (_, value) => {
+                if (!value) return;
+                setMode(value);
+                try {
+                  const { updatePreferences, setThemeMode: persistTheme } = await import('./api');
+                  await updatePreferences({ theme_mode: value });
+                  persistTheme(value);
+                } catch (err) {
+                  handleShowSnackbar(err.message || 'Failed to save preference', 'error');
+                }
+              }}
+              size="small"
+              sx={{ mb: 1 }}
+            >
+              <ToggleButton value="light">Light</ToggleButton>
+              <ToggleButton value="dark">Dark</ToggleButton>
+            </ToggleButtonGroup>
           </CardContent>
         </Card>
       )}
@@ -1018,10 +1300,24 @@ function App() {
         <DialogTitle>Confirm {action.charAt(0).toUpperCase() + action.slice(1)}</DialogTitle>
         <DialogContent>
           <DialogContentText>
+            {advisorSubmitActive && advisorSubmitQueue.length > 0 && (
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                  Advisor recommendation {advisorSubmitIndex + 1} of {advisorSubmitQueue.length}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  Processing {String(currentAdvisorRec?.action || '').toUpperCase()} {String(currentAdvisorRec?.symbol || '').toUpperCase()} x{currentAdvisorRec?.quantity ?? '—'}
+                </Typography>
+                <LinearProgress variant="determinate" value={advisorSubmitProgress} />
+              </Box>
+            )}
             {symbol.toUpperCase()} is currently trading at ${price}. {action === 'buy' ? 'Buy' : 'Sell'} {quantity} shares?
           </DialogContentText>
         </DialogContent>
         <DialogActions>
+          {advisorSubmitActive && (
+            <Button onClick={handleAdvisorSkip} disabled={isSubmittingOrder}>Skip</Button>
+          )}
           <Button onClick={handleCancel} disabled={isSubmittingOrder}>Cancel</Button>
           <Button onClick={handleConfirm} variant="contained" color={action === 'buy' ? 'success' : 'error'} disabled={isSubmittingOrder}>
             {isSubmittingOrder ? (<><CircularProgress size={18} sx={{ mr: 1 }} />Processing...</>) : 'Confirm'}

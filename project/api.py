@@ -134,7 +134,7 @@ def register(data: dict, db: Session = Depends(get_db)):
             db.commit()
             return {'message': 'User already exists; reset state'}
         raise HTTPException(status_code=400, detail='Username already exists')
-    user = models.User(username=username, password_hash=hash_password(password), active_portfolio='default')
+    user = models.User(username=username, password_hash=hash_password(password), active_portfolio='default', theme_mode='light')
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -170,7 +170,15 @@ def login(data: dict, db: Session = Depends(get_db)):
     db.commit()
     portfolios = [p.name for p in user.portfolios]
     logging.info('User logged in: %s', username)
-    return {'access_token': access_token, 'access_expires_at': access_expires.isoformat(), 'refresh_token': refresh_token, 'refresh_expires_at': refresh_expires.isoformat(), 'portfolios': portfolios, 'active': user.active_portfolio or 'default'}
+    return {
+        'access_token': access_token,
+        'access_expires_at': access_expires.isoformat(),
+        'refresh_token': refresh_token,
+        'refresh_expires_at': refresh_expires.isoformat(),
+        'portfolios': portfolios,
+        'active': user.active_portfolio or 'default',
+        'theme_mode': user.theme_mode or 'light',
+    }
 
 
 @app.post('/token/refresh')
@@ -221,7 +229,31 @@ def me(username: str = Depends(require_auth), db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail='User not found')
     portfolios = [p.name for p in user.portfolios]
-    return {'username': username, 'portfolios': portfolios, 'active': user.active_portfolio or 'default'}
+    return {
+        'username': username,
+        'portfolios': portfolios,
+        'active': user.active_portfolio or 'default',
+        'theme_mode': user.theme_mode or 'light',
+    }
+
+@app.get('/user/preferences')
+def get_preferences(username: str = Depends(require_auth), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    return {'theme_mode': user.theme_mode or 'light'}
+
+@app.post('/user/preferences')
+def set_preferences(data: dict, username: str = Depends(require_auth), db: Session = Depends(get_db)):
+    theme_mode = (data.get('theme_mode') or '').lower().strip()
+    if theme_mode not in {'light', 'dark'}:
+        raise HTTPException(status_code=400, detail='theme_mode must be light or dark')
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    user.theme_mode = theme_mode
+    db.commit()
+    return {'theme_mode': theme_mode}
 
 @app.post('/portfolio/create')
 def create_portfolio(data: dict, username: str = Depends(require_auth), db: Session = Depends(get_db)):

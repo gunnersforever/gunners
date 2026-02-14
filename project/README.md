@@ -3,7 +3,7 @@
 https://youtu.be/--gsD1vssQM
 
 #### Description:
-Portfolio Management Tool (PMT) is a simple tool for investment advisors to manage their client's portfolio through buying and selling tickers (currently limited to those listed in US) using real-time prices provisioned by Yahoo! Finance. Investment advisors can also save (write) and retrieve (read) client portfolios into csv files. PMT also traces the Total Cost of Ownership (TCO) of each ticker by recording the costs during buys and substracting the receipts from sells.
+Portfolio Management Tool (PMT) is a simple tool for investment advisors to manage their client's portfolio through buying and selling tickers (currently limited to those listed in US) using real-time prices provisioned by Finnhub. Investment advisors can also save (write) and retrieve (read) client portfolios into csv files. PMT also traces the Total Cost of Ownership (TCO) of each ticker by recording the costs during buys and substracting the receipts from sells.
 
 ## Table of Contents
 - [Introduction](#introduction)
@@ -28,7 +28,7 @@ PMT is a command-prompt interactive tool that allows users who act as investment
 There are 2 third-party libraries required to be installed in advance (please refer to "Third party libraries" section for details).
 
 ### How PMT works
-PMT is a console-based application where users can interactively enter instructions to retrieve a portfolio, save the current portfolio, buy a ticker, sell an existing ticker, and view the current portfolio content. PMT queries the real-time prices from Yahoo! Finance via a third-party library, prompts users to confirm if they want to proceed with the price, and executes the instruction. PMT resembles the real world use cases where investment advisors require to manage clients' portfolio through various buy and sell orders.
+PMT is a console-based application where users can interactively enter instructions to retrieve a portfolio, save the current portfolio, buy a ticker, sell an existing ticker, and view the current portfolio content. PMT queries the real-time prices from Finnhub, prompts users to confirm if they want to proceed with the price, and executes the instruction. PMT resembles the real world use cases where investment advisors require to manage clients' portfolio through various buy and sell orders.
 
 ### Assumptions
 - PMT does not take into account any transaction fees, such as exchange charges, bank charges, applicable taxes etc. The values of buy and sell instructions are simply calculated as the product of quantity and current price (rounded to 2 decimal places)
@@ -51,6 +51,12 @@ Or export it before running the API server:
 
 ```bash
 export GEMINI_API_KEY='your_key_here'
+
+The market price and ticker-name lookups require a Finnhub API key:
+
+```bash
+export FINNHUB_API_KEY='your_finnhub_key_here'
+```
 ```
 
 ## Tyche AI Advisor history
@@ -93,7 +99,7 @@ This function takes in an existing holdings list in memory, prompts for an input
 This function takes in an existing holdings list in memory, prompts for an input of desired ticker symbol and quantity to be bought, and performs the buy action by adding into the holdings list.  This function validates whether the ticker and price can be obtained, and performs the logic to either add a new entry to the holdings list, or to add this buy portion into the existing holdings record. It returns the updated holdings list to the caller.
 
 ### get_ticker_price(str)
-This function takes in the ticker symbol as string and performs a lookup for price provisioned by Yahoo! Finance via a third-party library named yfinance. It returns a price represented in float and rounded in 2 decimal places.
+This function takes in the ticker symbol as string and performs a lookup for price provisioned by Finnhub. It returns a price represented in float and rounded in 2 decimal places.
 
 ### check_file_is_csv(str)
 This is a boolean function that takes in the file name as string and performs a sanity check on whether it ends with ".csv". It returns either True or False.
@@ -102,7 +108,7 @@ This is a boolean function that takes in the file name as string and performs a 
 There are a total of 4 third-party libraries used in PMT:
 1. sys
 2. csv
-3. yfinance - for obtaining real-time ticker prices provisioned by Yahoo! Finance
+3. requests - for obtaining real-time ticker prices provisioned by Finnhub
 4. pandas - for obtaining the current timestamp in user-friendly format
 
 ## Future improvement ideas

@@ -17,18 +17,19 @@ python -m venv .venv
 pip install -r project/requirements.txt
 ```
 
-3. Configure Gemini (Tyche AI Advisor):
-- Copy the env example and set the API key:
+3. Configure API keys (Tyche AI Advisor + Finnhub):
+- Copy the env example and set the API keys:
 
 ```bash
 cp .env.example .env
-# edit .env and set GEMINI_API_KEY
+# edit .env and set GEMINI_API_KEY and FINNHUB_API_KEY
 ```
 
 - For one-off runs, you can export directly:
 
 ```bash
 export GEMINI_API_KEY='your_key_here'
+export FINNHUB_API_KEY='your_finnhub_key_here'
 ```
 
 4. Configure the database (optional):
@@ -90,10 +91,13 @@ npm run dev
 
 The Vite dev server proxies `/api` to the backend. Make sure the backend is running (default: `http://localhost:8000`).
 
-Note: The Tyche AI Advisor requires `GEMINI_API_KEY` to be configured in `.env` or exported in your shell before running the backend.
+Note: The Tyche AI Advisor requires `GEMINI_API_KEY`, and market price + ticker-name lookups require `FINNHUB_API_KEY` to be configured in `.env` or exported in your shell before running the backend.
 
 ### Tyche AI Advisor history
 The backend stores the 3 most recent advisor runs per user (inputs + recommendations). The UI exposes these via the Advisor drawer for quick comparison.
+
+### Ticker name cache
+The backend caches ticker symbols to names in a shared DB table (global across users) and reuses them for hover tooltips. Missing names are fetched from Finnhub on load/buy/sell, and an optional startup backfill can populate any missing symbols.
 
 Simplified start (Makefile) ✅
 For convenience, there are `Makefile` targets to setup and start the app during development.
@@ -117,6 +121,8 @@ make dev-stop
 ```bash
 make start-backend
 make start-frontend
+make build-backend
+make build-frontend
 ```
 
 This provides a one-line way to start the full stack.

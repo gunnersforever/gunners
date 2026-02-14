@@ -3,6 +3,10 @@ from sqlalchemy.orm import relationship
 from .db import Base
 import datetime
 
+
+def utcnow():
+    return datetime.datetime.now(datetime.UTC)
+
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True, index=True)
@@ -54,11 +58,18 @@ class PriceCache(Base):
     price = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 
+class TickerMetadata(Base):
+    __tablename__ = 'ticker_metadata'
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
 class AdvisorHistory(Base):
     __tablename__ = 'advisor_history'
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
     profile_json = Column(Text, nullable=False, default='{}')
     recommendations_json = Column(Text, nullable=False, default='[]')
 

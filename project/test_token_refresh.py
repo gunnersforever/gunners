@@ -15,7 +15,7 @@ from project import api
 client = TestClient(api.app)
 
 USERNAME = 'tokenuser'
-PASSWORD = 'tokenpass'
+PASSWORD = 'TokenPass12345'
 
 
 def auth_headers(token):
@@ -44,7 +44,7 @@ def test_token_refresh_and_expiry():
     db = SessionLocal()
     st = db.query(models.SessionToken).filter(models.SessionToken.token == access, models.SessionToken.token_type == 'access').first()
     assert st
-    st.expires_at = datetime.datetime.utcnow() - datetime.timedelta(minutes=1)
+    st.expires_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1)
     db.add(st)
     db.commit()
 
@@ -69,7 +69,7 @@ def test_token_refresh_and_expiry():
 
     # expire refresh token artificially and ensure it is rejected
     st2 = db.query(models.SessionToken).filter(models.SessionToken.token == new_refresh, models.SessionToken.token_type == 'refresh').first()
-    st2.expires_at = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+    st2.expires_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)
     db.add(st2)
     db.commit()
     r = client.post('/token/refresh', headers=auth_headers(new_refresh))

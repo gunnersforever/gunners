@@ -40,6 +40,7 @@ import {
   Select,
   Tabs,
   Tab,
+  Tooltip,
 } from '@mui/material';
 import { styled, useColorScheme } from '@mui/material/styles';
 import ArrowDropUpIcon from '@mui/icons-material/ArrowDropUp';
@@ -253,6 +254,16 @@ function App() {
     }
   };
 
+  const passwordRequirements = 'Use 12+ chars with upper/lowercase and a number.';
+  const validatePassword = (value) => {
+    if (!value) return 'Enter username and password';
+    if (value.length < 12) return 'Password must be at least 12 characters';
+    if (!/[a-z]/.test(value)) return 'Password must include a lowercase letter';
+    if (!/[A-Z]/.test(value)) return 'Password must include an uppercase letter';
+    if (!/\d/.test(value)) return 'Password must include a number';
+    return '';
+  };
+
   const horizonDurations = {
     Short: '3 to 12 months',
     Medium: '1 to 3 years',
@@ -389,6 +400,11 @@ Return ONLY valid JSON with this structure:
   const formatCurrency = (value, digits = 2) => {
     if (!Number.isFinite(value)) return '';
     return value.toFixed(digits);
+  };
+
+  const getTickerName = (row) => {
+    if (!row) return '';
+    return row.ticker_name || row.tickerName || row.company_name || row.name || '';
   };
 
   const normalizePortfolioRows = (rows) => {
@@ -966,9 +982,23 @@ Return ONLY valid JSON with this structure:
             <Typography variant="h5" gutterBottom>
               Sign in or Register
             </Typography>
-            <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-              <TextField label="Username" value={username} onChange={(e) => setUsername(e.target.value)} fullWidth />
-              <TextField label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} fullWidth />
+            <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+              <TextField
+                label="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                fullWidth
+              />
+              <TextField
+                label="Password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                helperText={passwordRequirements}
+                fullWidth
+              />
             </Box>
             <Box sx={{ display: 'flex', gap: 1 }}>
               <Button variant="contained" onClick={async () => {
@@ -996,6 +1026,8 @@ Return ONLY valid JSON with this structure:
               <Button variant="outlined" onClick={async () => {
                 // register then auto-login
                 if (!username || !password) { setError('Enter username and password'); return; }
+                const passwordError = validatePassword(password);
+                if (passwordError) { setError(passwordError); return; }
                 const { registerUser, loginUser } = await import('./api');
                 const r = await registerUser(username, password);
                 if (!r.ok) { setError(r.error); return; }
@@ -1083,9 +1115,11 @@ Return ONLY valid JSON with this structure:
                                 width: '100%',
                               }}
                             >
-                              <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>
-                                {row.ticker}
-                              </Typography>
+                              <Tooltip title={getTickerName(row)} placement="top" arrow disableHoverListener={!getTickerName(row)}>
+                                <Typography sx={{ fontWeight: 600, fontSize: '0.75rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>
+                                  {row.ticker}
+                                </Typography>
+                              </Tooltip>
                               <Typography sx={{ fontSize: '0.75rem', textAlign: 'right', whiteSpace: 'nowrap', pl: 0.25 }}>
                                 {formatQuantity(row.quantity)}
                               </Typography>
@@ -1136,7 +1170,11 @@ Return ONLY valid JSON with this structure:
                       <TableBody>
                         {portfolio.map((row, index) => (
                           <TableRow key={index}>
-                            <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>{row.ticker}</TableCell>
+                            <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word', py: 0.75 }}>
+                              <Tooltip title={getTickerName(row)} placement="top" arrow disableHoverListener={!getTickerName(row)}>
+                                <Box component="span">{row.ticker}</Box>
+                              </Tooltip>
+                            </TableCell>
                             <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>{formatQuantity(row.quantity)}</TableCell>
                             <TableCell align="right" sx={{ whiteSpace: 'nowrap', py: 0.75 }}>${row.totalcost}</TableCell>
                             {(() => {

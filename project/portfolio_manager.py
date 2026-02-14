@@ -1,6 +1,7 @@
-import csv, pandas, requests
+import csv, os, time, pandas, requests
 
 _PRICE_UNSET = object()
+_SYMBOLS_CACHE = {}
 
 
 # Retrieve a saved portfolio (csv) into memory
@@ -187,16 +188,103 @@ def check_file_is_csv(filename):
 
 
 def get_ticker_price(symbol):
-    api_key = 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30'  # Replace with your actual FinnHub API key
+    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
     url = f'https://finnhub.io/api/v1/quote?symbol={symbol}&token={api_key}'
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict) or 'c' not in data:
+            print(f"Error: unexpected FinnHub response for {symbol}: {data}")
+            return None
         return round(data['c'], 2)
     except requests.exceptions.RequestException as e:
         print(f"Error fetching price from FinnHub: {e}")
         return None
     except KeyError:
         print("Error: 'c' key not found in response")
+        return None
+
+
+def _extract_profile_name(data):
+    if not isinstance(data, dict):
+        return None
+    return (
+        data.get('name')
+        or data.get('description')
+        or data.get('companyName')
+        or data.get('ticker')
+        or None
+    )
+
+
+def get_stock_symbols(exchange, cache_ttl_seconds=86400):
+    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
+    exchange_key = str(exchange or '').upper() or 'US'
+    now = time.time()
+    cached = _SYMBOLS_CACHE.get(exchange_key)
+    if cached and (now - cached.get('fetched_at', 0)) < cache_ttl_seconds:
+        return cached.get('data', [])
+    url = f'https://finnhub.io/api/v1/stock/symbol?exchange={exchange_key}&token={api_key}'
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            print(f"Error: unexpected FinnHub symbols response: {data}")
+            return []
+        _SYMBOLS_CACHE[exchange_key] = {'fetched_at': now, 'data': data}
+        return data
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching symbols from FinnHub: {e}")
+        return cached.get('data', []) if cached else []
+
+
+def get_ticker_name_from_symbols(symbol, exchange='US', cache_ttl_seconds=86400):
+    symbol_upper = str(symbol or '').strip().upper()
+    if not symbol_upper:
+        return None
+    symbols = get_stock_symbols(exchange, cache_ttl_seconds=cache_ttl_seconds)
+    for item in symbols:
+        if str(item.get('symbol') or '').upper() == symbol_upper:
+            name = item.get('description') or item.get('displaySymbol') or item.get('symbol')
+            return str(name).strip() if name else None
+    return None
+
+
+def get_ticker_name(symbol, exchange='US', cache_ttl_seconds=86400):
+    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
+    profile_url = f'https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={api_key}'
+    etf_url = f'https://finnhub.io/api/v1/etf/profile?symbol={symbol}&token={api_key}'
+    search_url = f'https://finnhub.io/api/v1/search?q={symbol}&token={api_key}'
+    try:
+        response = requests.get(profile_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        name = _extract_profile_name(data)
+        if name:
+            return name.strip()
+        response = requests.get(etf_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        name = _extract_profile_name(data)
+        if name:
+            return name.strip()
+        response = requests.get(search_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        results = data.get('result') if isinstance(data, dict) else None
+        if isinstance(results, list):
+            symbol_upper = str(symbol or '').strip().upper()
+            match = next((r for r in results if str(r.get('symbol') or '').upper() == symbol_upper), None)
+            if not match and results:
+                match = results[0]
+            if match:
+                description = match.get('description') or match.get('displaySymbol')
+                if description:
+                    return str(description).strip()
+        symbols_name = get_ticker_name_from_symbols(symbol, exchange=exchange, cache_ttl_seconds=cache_ttl_seconds)
+        return symbols_name
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching profile from FinnHub: {e}")
         return None

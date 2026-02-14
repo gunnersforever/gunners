@@ -20,7 +20,7 @@ from project import api
 client = TestClient(api.app)
 
 USERNAME = 'testuser'
-PASSWORD = 'testpass'
+PASSWORD = 'TestPass12345'
 
 def auth_headers(token):
     return {'Authorization': f'Bearer {token}'}

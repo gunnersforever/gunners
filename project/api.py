@@ -1,28 +1,82 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import csv
 import io
 import os
 import logging
+import re
 import json
-from .portfolio_manager import retrieve_portfolio, write_portfolio, buy_ticker, sell_ticker, check_file_is_csv, get_ticker_price
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from .portfolio_manager import retrieve_portfolio, write_portfolio, buy_ticker, sell_ticker, check_file_is_csv, get_ticker_price, get_ticker_name
 
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Portfolio Management API", version="1.0")
+SENTRY_DSN = os.environ.get('SENTRY_DSN', '').strip()
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=os.environ.get('SENTRY_ENVIRONMENT', 'production'),
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.0')),
+        integrations=[FastApiIntegration()],
+        send_default_pii=False,
+    )
+    logging.info('Sentry initialized')
+
+@asynccontextmanager
+async def lifespan(app):
+    backfill_ticker_metadata()
+    yield
+
+app = FastAPI(title="Portfolio Management API", version="1.0", lifespan=lifespan)
+
+RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
+RATE_LIMIT_AUTH = os.environ.get('RATE_LIMIT_AUTH', '10/minute')
+limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT_DEFAULT])
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+ALLOWED_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
+ALLOWED_ORIGINS_LIST = ['*'] if ALLOWED_ORIGINS == '*' else [
+    origin.strip() for origin in ALLOWED_ORIGINS.split(',') if origin.strip()
+]
 
 # Allow CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=ALLOWED_ORIGINS_LIST,  # In production, specify your frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+ENABLE_HTTPS_REDIRECT = os.environ.get('ENABLE_HTTPS_REDIRECT', 'false').lower() in ('1', 'true', 'yes')
+if ENABLE_HTTPS_REDIRECT:
+    app.add_middleware(HTTPSRedirectMiddleware)
+
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['Referrer-Policy'] = 'same-origin'
+        response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 # DB-backed users/sessions using SQLAlchemy models
-from project.db import get_db
+from project.db import get_db, SessionLocal
 from sqlalchemy.orm import Session
 from project import models
 from passlib.context import CryptContext
@@ -33,6 +87,23 @@ import uuid
 import os
 TOKEN_EXPIRE_DAYS = int(os.environ.get('TOKEN_EXPIRE_DAYS', '7'))
 PRICE_CACHE_TTL_SECONDS = int(os.environ.get('PRICE_CACHE_TTL_SECONDS', '600'))
+TICKER_NAME_TTL_DAYS = int(os.environ.get('TICKER_NAME_TTL_DAYS', '30'))
+TICKER_NAME_TTL_SECONDS = TICKER_NAME_TTL_DAYS * 86400
+FINNHUB_SYMBOLS_EXCHANGE = os.environ.get('FINNHUB_SYMBOLS_EXCHANGE', 'US')
+FINNHUB_SYMBOLS_CACHE_TTL_SECONDS = int(os.environ.get('FINNHUB_SYMBOLS_CACHE_TTL_SECONDS', '604800'))
+ENABLE_TICKER_BACKFILL = os.environ.get('ENABLE_TICKER_BACKFILL', 'false').lower() in ('1', 'true', 'yes')
+
+
+def utcnow():
+    return datetime.datetime.now(datetime.UTC)
+
+
+def ensure_utc(value):
+    if not value:
+        return value
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.UTC)
+    return value
 
 try:
     import bcrypt  # optional native backend
@@ -54,6 +125,23 @@ except Exception:
 
 from fastapi import Header, Depends
 
+COMMON_PASSWORDS = {
+    'password', 'password123', '12345678', '123456789', 'qwerty123', 'letmein123',
+}
+
+def validate_password_strength(password: str) -> str:
+    if len(password) < 12:
+        return 'Password must be at least 12 characters'
+    if password.lower() in COMMON_PASSWORDS:
+        return 'Password is too common'
+    if not re.search(r'[a-z]', password):
+        return 'Password must include a lowercase letter'
+    if not re.search(r'[A-Z]', password):
+        return 'Password must include an uppercase letter'
+    if not re.search(r'\d', password):
+        return 'Password must include a number'
+    return ''
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -68,7 +156,7 @@ def require_auth(authorization: str = Header(None), db: Session = Depends(get_db
     st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'access').first()
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired token')
-    if st.expires_at and st.expires_at < datetime.datetime.utcnow():
+    if st.expires_at and ensure_utc(st.expires_at) < utcnow():
         # expired
         db.delete(st)
         db.commit()
@@ -82,17 +170,19 @@ def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
     symbol = (symbol or '').strip().upper()
     if not symbol:
         return None
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     try:
         cached = db.query(models.PriceCache).filter(models.PriceCache.symbol == symbol).first()
     except OperationalError:
         return get_ticker_price(symbol)
     if cached and cached.updated_at and not force_refresh:
-        age_seconds = (now - cached.updated_at).total_seconds()
+        age_seconds = (now - ensure_utc(cached.updated_at)).total_seconds()
         if age_seconds <= PRICE_CACHE_TTL_SECONDS and cached.price is not None:
             return cached.price
     price = get_ticker_price(symbol)
     if price is None:
+        if cached and cached.price is not None:
+            return cached.price
         return None
     if cached:
         cached.price = price
@@ -102,6 +192,67 @@ def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
         db.add(cached)
     db.commit()
     return price
+
+def get_cached_ticker_name(symbol: str, db: Session, force_refresh: bool = False):
+    symbol = (symbol or '').strip().upper()
+    if not symbol:
+        return None
+    now = utcnow()
+    try:
+        cached = db.query(models.TickerMetadata).filter(models.TickerMetadata.symbol == symbol).first()
+    except OperationalError:
+        return None
+    if cached and cached.name and cached.updated_at and not force_refresh:
+        age_seconds = (now - ensure_utc(cached.updated_at)).total_seconds()
+        if age_seconds <= TICKER_NAME_TTL_SECONDS:
+            return cached.name
+    name = get_ticker_name(symbol, exchange=FINNHUB_SYMBOLS_EXCHANGE, cache_ttl_seconds=FINNHUB_SYMBOLS_CACHE_TTL_SECONDS)
+    if not name:
+        return cached.name if cached else None
+    if cached:
+        cached.name = name
+        cached.updated_at = now
+    else:
+        cached = models.TickerMetadata(symbol=symbol, name=name, updated_at=now)
+        db.add(cached)
+    db.commit()
+    return name
+
+def attach_ticker_names(rows, db: Session, force_refresh: bool = False):
+    if not isinstance(rows, list):
+        return rows
+    for row in rows:
+        symbol = (row.get('symbol') or row.get('ticker') or '').strip().upper()
+        if not symbol:
+            continue
+        name = get_cached_ticker_name(symbol, db, force_refresh=force_refresh)
+        if name:
+            row['ticker_name'] = name
+    return rows
+
+
+def backfill_ticker_metadata():
+    if not ENABLE_TICKER_BACKFILL:
+        return
+    db = SessionLocal()
+    try:
+        symbols = [row[0] for row in db.query(models.Holding.symbol).distinct().all()]
+        for symbol in symbols:
+            symbol = (symbol or '').strip().upper()
+            if not symbol:
+                continue
+            existing = (
+                db.query(models.TickerMetadata)
+                .filter(models.TickerMetadata.symbol == symbol, models.TickerMetadata.name.isnot(None))
+                .first()
+            )
+            if existing:
+                continue
+            get_cached_ticker_name(symbol, db, force_refresh=True)
+    finally:
+        db.close()
+
+
 
 from sqlalchemy.exc import OperationalError
 
@@ -131,12 +282,16 @@ def get_recent_advisor_history(user_id: int, db: Session):
     )
     return [serialize_advisor_history(row) for row in rows]
 
+@limiter.limit(RATE_LIMIT_AUTH)
 @app.post('/register')
-def register(data: dict, db: Session = Depends(get_db)):
+def register(data: dict, request: Request, db: Session = Depends(get_db)):
     username = data.get('username')
     password = data.get('password')
     if not username or not password:
         raise HTTPException(status_code=400, detail='Username and password required')
+    password_error = validate_password_strength(password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
     try:
         existing = db.query(models.User).filter(models.User.username == username).first()
     except OperationalError as e:
@@ -171,8 +326,9 @@ def register(data: dict, db: Session = Depends(get_db)):
     logging.info('Registered new user: %s', username)
     return {'message': 'User registered'}
 
+@limiter.limit(RATE_LIMIT_AUTH)
 @app.post('/login')
-def login(data: dict, db: Session = Depends(get_db)):
+def login(data: dict, request: Request, db: Session = Depends(get_db)):
     username = data.get('username')
     password = data.get('password')
     if not username or not password:
@@ -187,10 +343,10 @@ def login(data: dict, db: Session = Depends(get_db)):
     # issue access and refresh tokens
     access_token = uuid.uuid4().hex
     refresh_token = uuid.uuid4().hex
-    access_expires = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)  # short-lived access token
-    refresh_expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)  # long-lived refresh token
-    st_access = models.SessionToken(token=access_token, user_id=user.id, token_type='access', expires_at=access_expires, created_at=datetime.datetime.utcnow())
-    st_refresh = models.SessionToken(token=refresh_token, user_id=user.id, token_type='refresh', expires_at=refresh_expires, created_at=datetime.datetime.utcnow())
+    access_expires = utcnow() + datetime.timedelta(minutes=15)  # short-lived access token
+    refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)  # long-lived refresh token
+    st_access = models.SessionToken(token=access_token, user_id=user.id, token_type='access', expires_at=access_expires, created_at=utcnow())
+    st_refresh = models.SessionToken(token=refresh_token, user_id=user.id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.commit()
@@ -206,9 +362,17 @@ def login(data: dict, db: Session = Depends(get_db)):
         'theme_mode': user.theme_mode or 'light',
     }
 
+@app.get('/health')
+def health():
+    return {
+        'status': 'ok',
+        'version': app.version,
+    }
 
+
+@limiter.limit(RATE_LIMIT_AUTH)
 @app.post('/token/refresh')
-def refresh_token(authorization: str = Header(None), db: Session = Depends(get_db)):
+def refresh_token(request: Request, authorization: str = Header(None), db: Session = Depends(get_db)):
     """Accept a refresh token in Authorization header and issue a new access token.
     We rotate the refresh token as well (delete old refresh token and create a new one).
     Return both `access_token` and `refresh_token` (rotated) with expiries.
@@ -219,17 +383,17 @@ def refresh_token(authorization: str = Header(None), db: Session = Depends(get_d
     st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'refresh').first()
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired refresh token')
-    if st.expires_at and st.expires_at < datetime.datetime.utcnow():
+    if st.expires_at and ensure_utc(st.expires_at) < utcnow():
         db.delete(st)
         db.commit()
         raise HTTPException(status_code=401, detail='Refresh token expired')
     # create new access token and rotate refresh token
     new_access = uuid.uuid4().hex
     new_refresh = uuid.uuid4().hex
-    access_expires = datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
-    refresh_expires = datetime.datetime.utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
-    st_access = models.SessionToken(token=new_access, user_id=st.user_id, token_type='access', expires_at=access_expires, created_at=datetime.datetime.utcnow())
-    st_refresh = models.SessionToken(token=new_refresh, user_id=st.user_id, token_type='refresh', expires_at=refresh_expires, created_at=datetime.datetime.utcnow())
+    access_expires = utcnow() + datetime.timedelta(minutes=15)
+    refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
+    st_access = models.SessionToken(token=new_access, user_id=st.user_id, token_type='access', expires_at=access_expires, created_at=utcnow())
+    st_refresh = models.SessionToken(token=new_refresh, user_id=st.user_id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.delete(st)
@@ -334,6 +498,7 @@ def get_portfolio(name: str = None, username: str = Depends(require_auth), db: S
             'curprice': str(h.curprice) if h.curprice is not None else '',
             'lasttransactiondate': h.lasttransactiondate or '',
         })
+    attach_ticker_names(rows, db)
     try:
         sorted_port = sorted(rows, key=lambda r: __import__('pandas').to_datetime(r.get('lasttransactiondate')), reverse=True)
     except Exception:
@@ -385,6 +550,7 @@ def load_portfolio(file: UploadFile = File(...), name: str = None, username: str
             db.add(h)
         user.active_portfolio = pname
         db.commit()
+        attach_ticker_names(rows, db)
         logging.info("Loaded %d rows into %s for user %s", len(rows), pname, username)
         return {"message": "Portfolio loaded successfully!", "portfolio": rows, "name": pname}
     except Exception as e:
@@ -465,6 +631,7 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         for r in new_rows:
             if 'symbol' not in r and 'ticker' in r:
                 r['symbol'] = r['ticker']
+        attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Buy completed for %s: %s', username, message)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
@@ -523,6 +690,7 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
         for r in new_rows:
             if 'symbol' not in r and 'ticker' in r:
                 r['symbol'] = r['ticker']
+        attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Sell completed for %s: %s', username, message)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
@@ -590,7 +758,7 @@ def gemini_advise(request: dict, username: str = Depends(require_auth), db: Sess
         if user:
             history = models.AdvisorHistory(
                 user_id=user.id,
-                created_at=datetime.datetime.utcnow(),
+                created_at=utcnow(),
                 profile_json=json.dumps(profile or {}),
                 recommendations_json=json.dumps(data.get('recommendations') or []),
             )

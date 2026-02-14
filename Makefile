@@ -30,21 +30,30 @@ ensure-db:
 # -----------------------------
 # Development / startup targets
 # -----------------------------
-.PHONY: start-backend start-backend-prod start-frontend build-frontend preview-frontend dev dev-stop setup
+.PHONY: start-backend start-backend-prod start-frontend build-frontend build-backend preview-frontend dev dev-stop setup
 
 start-backend:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	DATABASE_URL=$(DBURL) uvicorn project.api:app --reload --host $(HOST) --port $(PORT)
 
 start-backend-prod:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	DATABASE_URL=$(DBURL) uvicorn project.api:app --host $(HOST) --port $(PORT)
 
 start-frontend:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	cd frontend && npm install --legacy-peer-deps && npm run dev -- --host $(HOST) --port $(FRONTEND_PORT) < /dev/null
 
 build-frontend:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	cd frontend && npm install --legacy-peer-deps && npm run build
 
+build-backend:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
+	@echo "Backend build step not required (Python)."
+
 preview-frontend:
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	cd frontend && npm run preview -- --host $(HOST) --port $(FRONTEND_PORT)
 
 dev:
@@ -64,6 +73,7 @@ dev-stop:
 
 setup:
 	@echo "Setting up python venv and installing dependencies..."
+	@if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	-@python -m venv .venv || true
 	@.venv/bin/python -m pip install -r project/requirements.txt
 	@$(MAKE) ensure-db

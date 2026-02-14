@@ -26,6 +26,7 @@ import {
   CardContent,
   ToggleButton,
   ToggleButtonGroup,
+  Drawer,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -82,12 +83,17 @@ function App() {
   const [advisorLoading, setAdvisorLoading] = useState(false);
   const [advisorElapsed, setAdvisorElapsed] = useState(0);
   const [advisorRecs, setAdvisorRecs] = useState([]);
+  const [advisorResponseReceived, setAdvisorResponseReceived] = useState(false);
+  const [advisorRawResponse, setAdvisorRawResponse] = useState('');
   const [advisorSelected, setAdvisorSelected] = useState({});
   const [advisorSubmitQueue, setAdvisorSubmitQueue] = useState([]);
   const [advisorSubmitIndex, setAdvisorSubmitIndex] = useState(0);
   const [advisorSubmitActive, setAdvisorSubmitActive] = useState(false);
   const [advisorCompleted, setAdvisorCompleted] = useState({});
   const [advisorInputsCollapsed, setAdvisorInputsCollapsed] = useState(false);
+  const [advisorHistory, setAdvisorHistory] = useState([]);
+  const [advisorCompareId, setAdvisorCompareId] = useState('');
+  const [advisorDrawerOpen, setAdvisorDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
 
   // Use a dev proxy path so browser requests go through Vite -> backend and avoid CORS/network issues
@@ -127,6 +133,32 @@ function App() {
       isActive = false;
     };
   }, [setMode]);
+
+  const loadAdvisorHistory = async () => {
+    try {
+      const { fetchAdvisorHistory } = await import('./api');
+      const history = await fetchAdvisorHistory();
+      if (Array.isArray(history)) {
+        setAdvisorHistory(history);
+      }
+    } catch {
+      return;
+    }
+  };
+
+  useEffect(() => {
+    if (screen === 'main' && activeTab === 1) {
+      loadAdvisorHistory();
+    } else if (activeTab !== 1) {
+      setAdvisorDrawerOpen(false);
+    }
+  }, [screen, activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 1 && !advisorResponseReceived) {
+      setAdvisorInputsCollapsed(false);
+    }
+  }, [activeTab, advisorResponseReceived]);
 
   useEffect(() => {
     if (screen === 'load') {
@@ -208,6 +240,7 @@ function App() {
     setSnackbarOpen(true);
   };
 
+
   const handleThemeToggle = async (nextMode) => {
     themeUserChangedRef.current = true;
     setMode(nextMode);
@@ -231,6 +264,8 @@ function App() {
       handleShowSnackbar('Please enter age and select investment horizon', 'error');
       return;
     }
+    setAdvisorResponseReceived(false);
+    setAdvisorRawResponse('');
     setAdvisorElapsed(0);
     setAdvisorLoading(true);
     try {
@@ -268,7 +303,15 @@ Return ONLY valid JSON with this structure:
       const response = await authFetch(`${API_BASE}/gemini/advise`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          prompt,
+          profile: {
+            age: advisorAge,
+            risk_profile: advisorRisk,
+            risk_appetite: advisorAppetite,
+            horizon: advisorHorizon,
+          },
+        }),
       });
 
       if (!response.ok) {
@@ -278,7 +321,7 @@ Return ONLY valid JSON with this structure:
 
       const data = await response.json();
       try {
-        const recs = data.recommendations || [];
+        const recs = Array.isArray(data.recommendations) ? data.recommendations : [];
         const selected = recs.reduce((acc, rec) => {
           const action = String(rec.action || '').toUpperCase();
           if (action === 'BUY' || action === 'SELL') {
@@ -286,13 +329,25 @@ Return ONLY valid JSON with this structure:
           }
           return acc;
         }, {});
-        setAdvisorRecs(recs.map((rec) => ({
+        const normalizedRecs = recs.map((rec) => ({
           id: `${rec.symbol}-${rec.action}`,
           ...rec,
-        })));
+        }));
+        setAdvisorRecs(normalizedRecs);
         setAdvisorSelected(selected);
         setAdvisorCompleted({});
-        handleShowSnackbar('Advisor recommendations loaded', 'success');
+        setAdvisorRawResponse(data.raw_response || '');
+        setAdvisorResponseReceived(true);
+        if (Array.isArray(data.history)) {
+          setAdvisorHistory(data.history);
+        } else {
+          loadAdvisorHistory();
+        }
+        if (recs.length === 0 && !data.raw_response) {
+          handleShowSnackbar('No recommendations returned', 'info');
+        } else {
+          handleShowSnackbar('Advisor recommendations loaded', 'success');
+        }
       } catch (parseErr) {
         console.error('Parse error:', parseErr);
         handleShowSnackbar('Failed to parse recommendations', 'error');
@@ -382,12 +437,132 @@ Return ONLY valid JSON with this structure:
 
   const formatDateLocalCompact = (isoString) => formatDateUtcShort(isoString);
 
+  const normalizeConfidenceValue = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric <= 1 ? numeric * 100 : numeric;
+  };
+
+  const formatAdvisorTimestamp = (isoString) => {
+    if (!isoString) return '';
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return isoString;
+    return date.toLocaleString();
+  };
+
   const actionableAdvisorRecs = advisorRecs.filter((rec) => {
     const action = String(rec.action || '').toUpperCase();
     return action === 'BUY' || action === 'SELL';
   });
-  const showAdvisorResults = !advisorLoading && advisorRecs.length > 0;
+  const showAdvisorResults = !advisorLoading && advisorResponseReceived;
   const selectedAdvisorCount = actionableAdvisorRecs.filter((rec) => advisorSelected[rec.id] && !advisorCompleted[rec.id]).length;
+  const safeAdvisorHistory = Array.isArray(advisorHistory) ? advisorHistory : [];
+  const advisorCompareRun = safeAdvisorHistory.find((run) => run.id === advisorCompareId) || null;
+  const compareMap = advisorCompareRun
+    ? (advisorCompareRun.recommendations || []).reduce((acc, rec) => {
+      const action = String(rec.action || '').toUpperCase();
+      if (action !== 'BUY' && action !== 'SELL') return acc;
+      const symbol = String(rec.symbol || '').toUpperCase();
+      acc[`${action}::${symbol}`] = rec;
+      return acc;
+    }, {})
+    : {};
+  const removedCompareRecs = advisorCompareRun
+    ? Object.values(compareMap).filter((rec) => {
+      const action = String(rec.action || '').toUpperCase();
+      const symbol = String(rec.symbol || '').toUpperCase();
+      return !actionableAdvisorRecs.some((cur) => (
+        String(cur.action || '').toUpperCase() === action
+        && String(cur.symbol || '').toUpperCase() === symbol
+      ));
+    })
+    : [];
+  const advisorDrawerAnchor = isSmallScreen ? 'bottom' : 'right';
+  const advisorHistoryContent = (
+    <Box sx={{ width: isSmallScreen ? '100%' : 360, p: 2 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+        <Typography variant="subtitle1">Recent Advice</Typography>
+        {safeAdvisorHistory.length > 0 && (
+          <Button
+            size="small"
+            variant="text"
+            onClick={() => setAdvisorCompareId('')}
+            sx={{ px: 1, py: 0.25, minWidth: 0 }}
+          >
+            Clear compare
+          </Button>
+        )}
+      </Box>
+      {safeAdvisorHistory.length === 0 ? (
+        <Typography variant="caption" color="text.secondary">
+          No recent advice yet.
+        </Typography>
+      ) : (
+        <Stack spacing={0.75}>
+          {safeAdvisorHistory.map((run, index) => {
+            const runRecs = Array.isArray(run.recommendations) ? run.recommendations : [];
+            const buyCount = runRecs.filter((rec) => String(rec.action || '').toUpperCase() === 'BUY').length;
+            const sellCount = runRecs.filter((rec) => String(rec.action || '').toUpperCase() === 'SELL').length;
+            const averageConfidence = (() => {
+              const values = runRecs
+                .map((rec) => normalizeConfidenceValue(rec.confidence))
+                .filter((value) => value !== null);
+              if (!values.length) return null;
+              return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+            })();
+            return (
+              <Button
+                key={run.id || index}
+                size="small"
+                variant={advisorCompareId === run.id ? 'contained' : 'outlined'}
+                onClick={() => {
+                  setAdvisorCompareId(run.id);
+                  setAdvisorDrawerOpen(false);
+                }}
+                sx={{ justifyContent: 'space-between', textTransform: 'none', px: 1, py: 0.75 }}
+              >
+                <Box sx={{ textAlign: 'left' }}>
+                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
+                    {formatAdvisorTimestamp(run.created_at)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Age {run.profile?.age || '—'} · {run.profile?.risk_profile || '—'} · {run.profile?.risk_appetite || '—'} · {run.profile?.horizon || '—'}
+                  </Typography>
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'right' }}>
+                  BUY {buyCount} / SELL {sellCount}{averageConfidence !== null ? ` · ${averageConfidence}%` : ''}
+                </Typography>
+              </Button>
+            );
+          })}
+        </Stack>
+      )}
+      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+        Select a run to compare. Changes appear in the Change column.
+      </Typography>
+      {advisorCompareRun && (
+        <Box sx={{ display: 'flex', gap: 0.75, mt: 1, flexWrap: 'wrap' }}>
+          <Typography variant="caption" color="text.secondary">
+            Comparing with {formatAdvisorTimestamp(advisorCompareRun.created_at)}
+          </Typography>
+          <Button
+            size="small"
+            variant="text"
+            onClick={() => {
+              if (!advisorCompareRun.profile) return;
+              setAdvisorAge(advisorCompareRun.profile.age || '');
+              setAdvisorRisk(advisorCompareRun.profile.risk_profile || 'Balanced');
+              setAdvisorAppetite(advisorCompareRun.profile.risk_appetite || 'Medium');
+              setAdvisorHorizon(advisorCompareRun.profile.horizon || 'Medium');
+            }}
+            sx={{ px: 1, py: 0.25, minWidth: 0 }}
+          >
+            Use profile again
+          </Button>
+        </Box>
+      )}
+    </Box>
+  );
 
   useEffect(() => {
     if (showAdvisorResults) {
@@ -413,6 +588,7 @@ Return ONLY valid JSON with this structure:
     const percent = numeric <= 1 ? numeric * 100 : numeric;
     return `${Math.round(percent)}%`;
   };
+
 
   const currentAdvisorRec = advisorSubmitQueue[advisorSubmitIndex];
   const advisorSubmitProgress = advisorSubmitQueue.length > 0
@@ -712,6 +888,8 @@ Return ONLY valid JSON with this structure:
     setSymbol('');
     setQuantity('');
     setPrice(null);
+    setAdvisorHistory([]);
+    setAdvisorCompareId('');
     setScreen('login');
   };
 
@@ -1174,50 +1352,93 @@ Return ONLY valid JSON with this structure:
                             <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Rec Qty</TableCell>
                             <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Held Qty</TableCell>
                             <TableCell align="right" sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Conf %</TableCell>
+                            <TableCell sx={{ fontSize: '0.7rem', py: 0.5, width: '20%' }}>Change</TableCell>
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {actionableAdvisorRecs.map((rec) => (
-                            (() => {
-                              const isCompleted = !!advisorCompleted[rec.id];
-                              return (
-                            <TableRow key={rec.id}>
-                              <TableCell sx={{ py: 0.5 }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                  <Checkbox
-                                    size="small"
-                                    checked={!!advisorSelected[rec.id]}
-                                    onChange={() => toggleAdvisorSelect(rec.id)}
-                                    sx={{ p: 0.25 }}
-                                    disabled={isCompleted}
-                                  />
-                                  <Typography
-                                    variant="body2"
-                                    sx={{ fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}
-                                  >
-                                    {rec.action}
-                                  </Typography>
-                                </Box>
-                              </TableCell>
-                              <TableCell sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
-                                {String(rec.symbol || '').toUpperCase()}
-                              </TableCell>
-                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
-                                {rec.quantity ?? '—'}
-                              </TableCell>
-                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
-                                {formatQuantity(getHoldingQuantity(rec.symbol))}
-                              </TableCell>
-                              <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
-                                {formatConfidencePercent(rec.confidence)}
+                          {actionableAdvisorRecs.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={6} sx={{ py: 1 }}>
+                                <Typography variant="caption" color="text.secondary">
+                                  No BUY/SELL recommendations returned yet.
+                                </Typography>
                               </TableCell>
                             </TableRow>
-                              );
-                            })()
-                          ))}
+                          ) : (
+                            actionableAdvisorRecs.map((rec) => (
+                              (() => {
+                                const isCompleted = !!advisorCompleted[rec.id];
+                                const compareKey = `${String(rec.action || '').toUpperCase()}::${String(rec.symbol || '').toUpperCase()}`;
+                                const compareRec = compareMap[compareKey];
+                                let changeLabel = '';
+                                if (advisorCompareRun) {
+                                  if (!compareRec) {
+                                    changeLabel = 'NEW';
+                                  } else {
+                                    const qtyDelta = Number(rec.quantity) - Number(compareRec.quantity);
+                                    const confDelta = (normalizeConfidenceValue(rec.confidence) ?? 0) - (normalizeConfidenceValue(compareRec.confidence) ?? 0);
+                                    const parts = [];
+                                    if (Number.isFinite(qtyDelta) && qtyDelta !== 0) {
+                                      parts.push(`Qty ${qtyDelta > 0 ? '+' : ''}${qtyDelta}`);
+                                    }
+                                    if (Number.isFinite(confDelta) && Math.round(confDelta) !== 0) {
+                                      parts.push(`Conf ${confDelta > 0 ? '+' : ''}${Math.round(confDelta)}%`);
+                                    }
+                                    changeLabel = parts.length ? parts.join(' ') : 'Same';
+                                  }
+                                }
+                                return (
+                              <TableRow key={rec.id}>
+                                <TableCell sx={{ py: 0.5 }}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                    <Checkbox
+                                      size="small"
+                                      checked={!!advisorSelected[rec.id]}
+                                      onChange={() => toggleAdvisorSelect(rec.id)}
+                                      sx={{ p: 0.25 }}
+                                      disabled={isCompleted}
+                                    />
+                                    <Typography
+                                      variant="body2"
+                                      sx={{ fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}
+                                    >
+                                      {rec.action}
+                                    </Typography>
+                                  </Box>
+                                </TableCell>
+                                <TableCell sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                  {String(rec.symbol || '').toUpperCase()}
+                                </TableCell>
+                                <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                  {rec.quantity ?? '—'}
+                                </TableCell>
+                                <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                  {formatQuantity(getHoldingQuantity(rec.symbol))}
+                                </TableCell>
+                                <TableCell align="right" sx={{ py: 0.5, fontSize: '0.78rem', color: isCompleted ? 'text.disabled' : 'text.primary' }}>
+                                  {formatConfidencePercent(rec.confidence)}
+                                </TableCell>
+                                <TableCell sx={{ py: 0.5, fontSize: '0.72rem', color: isCompleted ? 'text.disabled' : 'text.secondary' }}>
+                                  {changeLabel || '—'}
+                                </TableCell>
+                              </TableRow>
+                                );
+                              })()
+                            ))
+                          )}
                         </TableBody>
                       </Table>
                     </TableContainer>
+                    {advisorCompareRun && removedCompareRecs.length > 0 && (
+                      <Box sx={{ mt: 0.75 }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                          Removed since last advice:
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {removedCompareRecs.map((rec) => `${String(rec.action || '').toUpperCase()} ${String(rec.symbol || '').toUpperCase()}`).join(' · ')}
+                        </Typography>
+                      </Box>
+                    )}
                     <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                       <Typography variant="caption" color="text.secondary">
                         Selected: {selectedAdvisorCount}
@@ -1233,9 +1454,30 @@ Return ONLY valid JSON with this structure:
                     </Box>
                   </Grid>
                   <Grid size={{ xs: 12, md: advisorInputsCollapsed ? 5 : 4 }}>
-                    <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
-                      Your Tyche's Advice
-                    </Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5, gap: 1, flexWrap: 'wrap' }}>
+                      <Typography variant={isSmallScreen ? 'h6' : 'h5'}>
+                        Your Tyche's Advice
+                      </Typography>
+                      <Box sx={{ display: 'flex', gap: 0.5 }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => setAdvisorDrawerOpen(true)}
+                        >
+                          Recent Advice
+                        </Button>
+                        {advisorCompareRun && (
+                          <Button
+                            size="small"
+                            variant="text"
+                            onClick={() => setAdvisorCompareId('')}
+                            sx={{ px: 1, py: 0.25, minWidth: 0 }}
+                          >
+                            Clear compare
+                          </Button>
+                        )}
+                      </Box>
+                    </Box>
                     <Paper
                       variant="outlined"
                       sx={{
@@ -1245,40 +1487,53 @@ Return ONLY valid JSON with this structure:
                         backgroundColor: 'var(--soft-bg)',
                       }}
                     >
-                      {advisorRecs.map((rec) => {
-                        const action = (rec.action || '').toUpperCase();
-                        const actionColor = action === 'BUY'
-                          ? 'success.main'
-                          : action === 'SELL'
-                            ? 'error.main'
-                            : 'text.secondary';
-                        const symbol = (rec.symbol || '').toUpperCase();
-                        return (
-                          <Box
-                            key={rec.id}
-                            sx={{
-                              mb: 1,
-                              p: 1,
-                              borderRadius: 1,
-                              border: '1px solid',
-                              borderColor: 'divider',
-                              backgroundColor: 'var(--card-bg)',
-                            }}
-                          >
-                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <Typography variant="subtitle2">{symbol || '—'}</Typography>
-                              <Typography variant="caption" sx={{ fontWeight: 600, color: actionColor }}>
-                                {action || 'HOLD'}
-                              </Typography>
+                      {advisorRecs.length === 0 ? (
+                        <Box sx={{ p: 1, borderRadius: 1, border: '1px dashed', borderColor: 'divider' }}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: advisorRawResponse ? 0.75 : 0 }}>
+                            No recommendations to display yet.
+                          </Typography>
+                          {advisorRawResponse && (
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                              {advisorRawResponse}
+                            </Typography>
+                          )}
+                        </Box>
+                      ) : (
+                        advisorRecs.map((rec) => {
+                          const action = (rec.action || '').toUpperCase();
+                          const actionColor = action === 'BUY'
+                            ? 'success.main'
+                            : action === 'SELL'
+                              ? 'error.main'
+                              : 'text.secondary';
+                          const symbol = (rec.symbol || '').toUpperCase();
+                          return (
+                            <Box
+                              key={rec.id}
+                              sx={{
+                                mb: 1,
+                                p: 1,
+                                borderRadius: 1,
+                                border: '1px solid',
+                                borderColor: 'divider',
+                                backgroundColor: 'var(--card-bg)',
+                              }}
+                            >
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <Typography variant="subtitle2">{symbol || '—'}</Typography>
+                                <Typography variant="caption" sx={{ fontWeight: 600, color: actionColor }}>
+                                  {action || 'HOLD'}
+                                </Typography>
+                              </Box>
+                              <Box sx={{ mt: 0.75, p: 0.75, borderRadius: 1, backgroundColor: 'var(--soft-bg-alt)' }}>
+                                <Typography variant="body2">
+                                  {rec.rationale || 'No reasoning provided.'}
+                                </Typography>
+                              </Box>
                             </Box>
-                            <Box sx={{ mt: 0.75, p: 0.75, borderRadius: 1, backgroundColor: 'var(--soft-bg-alt)' }}>
-                              <Typography variant="body2">
-                                {rec.rationale || 'No reasoning provided.'}
-                              </Typography>
-                            </Box>
-                          </Box>
-                        );
-                      })}
+                          );
+                        })
+                      )}
                     </Paper>
                   </Grid>
                 </>
@@ -1309,6 +1564,14 @@ Return ONLY valid JSON with this structure:
           </CardContent>
         </Card>
       )}
+
+      <Drawer
+        anchor={advisorDrawerAnchor}
+        open={advisorDrawerOpen}
+        onClose={() => setAdvisorDrawerOpen(false)}
+      >
+        {advisorHistoryContent}
+      </Drawer>
 
       <Dialog open={dialogOpen} onClose={handleCancel}>
         <DialogTitle>Confirm {action.charAt(0).toUpperCase() + action.slice(1)}</DialogTitle>

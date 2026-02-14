@@ -53,3 +53,13 @@ class PriceCache(Base):
     symbol = Column(String, unique=True, index=True, nullable=False)
     price = Column(Float, nullable=True)
     updated_at = Column(DateTime, nullable=True)
+
+class AdvisorHistory(Base):
+    __tablename__ = 'advisor_history'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+    profile_json = Column(Text, nullable=False, default='{}')
+    recommendations_json = Column(Text, nullable=False, default='[]')
+
+    user = relationship('User')

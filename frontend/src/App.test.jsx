@@ -17,6 +17,19 @@ const makeQueuedFetch = (responses) => (
     if (String(url).includes('/get_price')) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ price: 100 }) });
     }
+    if (String(url).includes('/user/preferences')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ theme_mode: 'light' }) });
+    }
+    if (String(url).includes('/advisor/history')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ history: [] }) });
+    }
+    if (String(url).includes('/gemini/advise')) {
+      const next = responses.shift();
+      if (next) {
+        return Promise.resolve(next);
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ recommendations: [], history: [] }) });
+    }
     const next = responses.shift();
     if (!next) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
@@ -140,3 +153,87 @@ test('login -> buy -> sell updates portfolio rows', async () => {
   expect(screen.getByText('1.0')).toBeInTheDocument();
   expect(screen.getByText(/-FEB-26/)).toBeInTheDocument();
 });
+
+test('switching to advisor tab renders inputs', async () => {
+  render(<App />);
+
+  globalThis.fetch = makeQueuedFetch([
+    { ok: true, json: async () => ({ access_token: 'a', refresh_token: 'r' }) },
+  ]);
+
+  await userEvent.type(screen.getByLabelText(/Username/), 'u');
+  await userEvent.type(screen.getByLabelText(/Password/), 'p');
+  await userEvent.click(screen.getByRole('button', { name: /Login/i }));
+  await screen.findByText(/Choose an Option/i);
+
+  globalThis.fetch = makeQueuedFetch([
+    { ok: true, status: 200, json: async () => ({ message: 'Started new portfolio', portfolio: [] }) },
+  ]);
+  await userEvent.click(screen.getByRole('button', { name: /Start New Portfolio/i }));
+  await screen.findByText(/No holdings in portfolio/i);
+
+  await userEvent.click(screen.getByRole('tab', { name: /Tyche AI Advisor/i }));
+  await screen.findByLabelText(/Age/i);
+  expect(screen.getByLabelText(/Age/i)).toBeInTheDocument();
+});
+
+test('full workflow navigation stays stable', async () => {
+  render(<App />);
+
+  const mockOk = (payload) => ({ ok: true, status: 200, json: async () => payload });
+  globalThis.fetch = makeQueuedFetch([
+    mockOk({ access_token: 'a', refresh_token: 'r' }),
+  ]);
+
+  await userEvent.type(screen.getByLabelText(/Username/), 'u');
+  await userEvent.type(screen.getByLabelText(/Password/), 'p');
+  await userEvent.click(screen.getByRole('button', { name: /Login/i }));
+  await screen.findByText(/Choose an Option/i);
+
+  globalThis.fetch = makeQueuedFetch([
+    mockOk({ message: 'Started new portfolio', portfolio: [] }),
+  ]);
+  await userEvent.click(screen.getByRole('button', { name: /Start New Portfolio/i }));
+  await screen.findByText(/No holdings in portfolio/i);
+
+  globalThis.fetch = makeQueuedFetch([
+    mockOk({
+      message: 'Bought',
+      portfolio: [
+        {
+          ticker: 'VTI',
+          quantity: '1',
+          totalcost: '100.00',
+          lasttransactiondate: '2026-02-09T00:00:00Z',
+        },
+      ],
+    }),
+  ]);
+  await userEvent.type(screen.getByLabelText(/Symbol/i), 'VTI');
+  await userEvent.type(screen.getByLabelText(/Quantity/i), '1');
+  await userEvent.click(screen.getByRole('button', { name: /Proceed/i }));
+  await screen.findByText(/Confirm Buy/i);
+  await userEvent.click(screen.getByRole('button', { name: /Confirm/i }));
+  await waitFor(() => expect(screen.queryByText(/Confirm Buy/i)).toBeNull());
+  await waitFor(() => expect(screen.getByText('VTI')).toBeInTheDocument());
+
+  await userEvent.click(screen.getByRole('tab', { name: /Tyche AI Advisor/i }));
+  await screen.findByLabelText(/Age/i);
+
+  globalThis.fetch = makeQueuedFetch([
+    mockOk({
+      recommendations: [
+        { action: 'BUY', symbol: 'VTI', quantity: 1, confidence: 80, rationale: 'Diversify.' },
+      ],
+      history: [],
+    }),
+  ]);
+
+  await userEvent.type(screen.getByLabelText(/Age/i), '40');
+  await userEvent.click(screen.getByRole('button', { name: /Ask Tyche AI Advisor/i }));
+  await screen.findByRole('heading', { name: /Recommendations/i });
+
+  await userEvent.click(screen.getByRole('tab', { name: /My Portfolio/i }));
+  await screen.findByText(/Current Portfolio/i);
+});
+

@@ -144,3 +144,12 @@ export async function fetchPortfolioFromApi() {
     return { portfolio: [], error: 'Failed to fetch portfolio' };
   }
 }
+
+export async function fetchAdvisorHistory() {
+  const response = await authFetch('/api/advisor/history');
+  if (!response.ok) {
+    return [];
+  }
+  const data = await response.json().catch(() => null);
+  return (data && data.history) || [];
+}

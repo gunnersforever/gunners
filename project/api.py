@@ -105,6 +105,32 @@ def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
 
 from sqlalchemy.exc import OperationalError
 
+def serialize_advisor_history(row):
+    try:
+        profile = json.loads(row.profile_json) if row.profile_json else {}
+    except json.JSONDecodeError:
+        profile = {}
+    try:
+        recs = json.loads(row.recommendations_json) if row.recommendations_json else []
+    except json.JSONDecodeError:
+        recs = []
+    return {
+        'id': str(row.id),
+        'created_at': row.created_at.isoformat() if row.created_at else '',
+        'profile': profile,
+        'recommendations': recs,
+    }
+
+def get_recent_advisor_history(user_id: int, db: Session):
+    rows = (
+        db.query(models.AdvisorHistory)
+        .filter(models.AdvisorHistory.user_id == user_id)
+        .order_by(models.AdvisorHistory.created_at.desc())
+        .limit(3)
+        .all()
+    )
+    return [serialize_advisor_history(row) for row in rows]
+
 @app.post('/register')
 def register(data: dict, db: Session = Depends(get_db)):
     username = data.get('username')
@@ -254,6 +280,13 @@ def set_preferences(data: dict, username: str = Depends(require_auth), db: Sessi
     user.theme_mode = theme_mode
     db.commit()
     return {'theme_mode': theme_mode}
+
+@app.get('/advisor/history')
+def advisor_history(username: str = Depends(require_auth), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    return {'history': get_recent_advisor_history(user.id, db)}
 
 @app.post('/portfolio/create')
 def create_portfolio(data: dict, username: str = Depends(require_auth), db: Session = Depends(get_db)):
@@ -509,10 +542,11 @@ def get_portfolio_file(filename: str):
 
 
 @app.post("/gemini/advise")
-def gemini_advise(request: dict):
+def gemini_advise(request: dict, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     """Call Gemini API for investment advisor recommendations."""
     try:
         prompt = request.get('prompt')
+        profile = request.get('profile') or {}
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
         
@@ -552,6 +586,28 @@ def gemini_advise(request: dict):
                 if isinstance(rec, dict) and 'symbol' not in rec and 'ticker' in rec:
                     rec['symbol'] = rec.get('ticker')
 
+        user = db.query(models.User).filter(models.User.username == username).first()
+        if user:
+            history = models.AdvisorHistory(
+                user_id=user.id,
+                created_at=datetime.datetime.utcnow(),
+                profile_json=json.dumps(profile or {}),
+                recommendations_json=json.dumps(data.get('recommendations') or []),
+            )
+            db.add(history)
+            db.commit()
+            # Keep only the 3 most recent rows
+            rows = (
+                db.query(models.AdvisorHistory)
+                .filter(models.AdvisorHistory.user_id == user.id)
+                .order_by(models.AdvisorHistory.created_at.desc())
+                .all()
+            )
+            if len(rows) > 3:
+                for old_row in rows[3:]:
+                    db.delete(old_row)
+                db.commit()
+        data['history'] = get_recent_advisor_history(user.id, db) if user else []
         return data
     except json.JSONDecodeError as e:
         logging.error("JSON parse error: %s", str(e))

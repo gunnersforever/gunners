@@ -5,7 +5,10 @@ import pytest
 
 # Use a temporary file-backed SQLite DB for tests to avoid SQLite in-memory
 # connection isolation across threads used by TestClient.
-os.environ['DATABASE_URL'] = 'sqlite:///./test.db'
+DB_PATH = os.path.join(tempfile.gettempdir(), 'gunners_test_persistence.db')
+if os.path.exists(DB_PATH):
+    os.remove(DB_PATH)
+os.environ['DATABASE_URL'] = f'sqlite:///{DB_PATH}'
 
 from fastapi.testclient import TestClient
 from project import init_db

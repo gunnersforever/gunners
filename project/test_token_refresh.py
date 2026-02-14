@@ -1,6 +1,10 @@
 import os
+import tempfile
 
-os.environ['DATABASE_URL'] = 'sqlite:///./test.db'
+DB_PATH = os.path.join(tempfile.gettempdir(), 'gunners_test_token_refresh.db')
+if os.path.exists(DB_PATH):
+    os.remove(DB_PATH)
+os.environ['DATABASE_URL'] = f'sqlite:///{DB_PATH}'
 from fastapi.testclient import TestClient
 from project import init_db
 

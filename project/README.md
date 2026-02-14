@@ -53,6 +53,10 @@ Or export it before running the API server:
 export GEMINI_API_KEY='your_key_here'
 ```
 
+## Tyche AI Advisor history
+
+The backend stores the 3 most recent advisor runs per user (inputs + recommendations) so the UI can compare current advice against recent runs.
+
 ## Database migrations (Alembic) ⚠️
 
 We use SQLAlchemy + Alembic for schema migrations. Development convenience commands are available in the top-level `Makefile` (see root of repository).
@@ -68,6 +72,10 @@ Notes:
 - Set a custom DB path with `DATABASE_URL` environment variable, e.g. `export DATABASE_URL="sqlite:////absolute/path/gunners.db"`.
 - For production use the native `bcrypt` package and install system libraries: `libffi-dev`, `build-essential` (Debian/Ubuntu). See the top of this README and `project/requirements.txt` for package hints.
 - Auth & tokens: login returns `access_token` (short-lived, e.g. 15 minutes) and `refresh_token` (long-lived, e.g. 7 days). To refresh use `POST /token/refresh` with the refresh token in the `Authorization: Bearer <refresh-token>` header. The refresh endpoint rotates the refresh token and returns both a new `access_token` and `refresh_token`.
+
+## Tests
+
+Tests use temporary SQLite DB files in the system temp directory to avoid in-memory connection isolation across threads.
 
 
 ## Code and functions

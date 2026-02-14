@@ -92,6 +92,9 @@ The Vite dev server proxies `/api` to the backend. Make sure the backend is runn
 
 Note: The Tyche AI Advisor requires `GEMINI_API_KEY` to be configured in `.env` or exported in your shell before running the backend.
 
+### Tyche AI Advisor history
+The backend stores the 3 most recent advisor runs per user (inputs + recommendations). The UI exposes these via the Advisor drawer for quick comparison.
+
 Simplified start (Makefile) ✅
 For convenience, there are `Makefile` targets to setup and start the app during development.
 
@@ -167,7 +170,7 @@ pytest -q
 ```
 
 Notes:
-- Tests use a temporary SQLite DB (`./test.db`) by default in this workspace to avoid in-memory connection isolation across threads. Remove it between test runs if you need a clean state.
+- Tests use temporary SQLite DB files in the system temp directory to avoid in-memory connection isolation across threads.
 ### Troubleshooting ⚠️
 - Python version: `make setup` now checks for **Python 3.10+** and will fail with a clear message if your `python` is older. If you see that message, install a newer Python and ensure `python` on your PATH points to the new version (or run `python3.10 -m venv .venv` manually before re-running `make setup`).
 

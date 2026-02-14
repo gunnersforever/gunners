@@ -17,7 +17,22 @@ python -m venv .venv
 pip install -r project/requirements.txt
 ```
 
-3. Configure the database (optional):
+3. Configure API keys (Tyche AI Advisor + Finnhub):
+- Copy the env example and set the API keys:
+
+```bash
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY and FINNHUB_API_KEY
+```
+
+- For one-off runs, you can export directly:
+
+```bash
+export GEMINI_API_KEY='your_key_here'
+export FINNHUB_API_KEY='your_finnhub_key_here'
+```
+
+4. Configure the database (optional):
 - By default the app uses SQLite file `./gunners.db`.
 - To override, set `DATABASE_URL` before running or testing, e.g.:
 
@@ -25,7 +40,7 @@ pip install -r project/requirements.txt
 export DATABASE_URL='sqlite:///./dev.db'
 ```
 
-4. Initialize database schema:
+5. Initialize database schema:
 - For development, you can quickly create tables using:
 
 ```bash
@@ -50,7 +65,7 @@ make db-revision MESSAGE="add some change"
 make db-upgrade
 ```
 
-5. Run the API server:
+6. Run the API server:
 
 ```bash
 uvicorn project.api:app --reload --host 0.0.0.0 --port 8000
@@ -76,6 +91,14 @@ npm run dev
 
 The Vite dev server proxies `/api` to the backend. Make sure the backend is running (default: `http://localhost:8000`).
 
+Note: The Tyche AI Advisor requires `GEMINI_API_KEY`, and market price + ticker-name lookups require `FINNHUB_API_KEY` to be configured in `.env` or exported in your shell before running the backend.
+
+### Tyche AI Advisor history
+The backend stores the 3 most recent advisor runs per user (inputs + recommendations). The UI exposes these via the Advisor drawer for quick comparison.
+
+### Ticker name cache
+The backend caches ticker symbols to names in a shared DB table (global across users) and reuses them for hover tooltips. Missing names are fetched from Finnhub on load/buy/sell, and an optional startup backfill can populate any missing symbols.
+
 Simplified start (Makefile) ✅
 For convenience, there are `Makefile` targets to setup and start the app during development.
 
@@ -98,6 +121,8 @@ make dev-stop
 ```bash
 make start-backend
 make start-frontend
+make build-backend
+make build-frontend
 ```
 
 This provides a one-line way to start the full stack.
@@ -151,7 +176,7 @@ pytest -q
 ```
 
 Notes:
-- Tests use a temporary SQLite DB (`./test.db`) by default in this workspace to avoid in-memory connection isolation across threads. Remove it between test runs if you need a clean state.
+- Tests use temporary SQLite DB files in the system temp directory to avoid in-memory connection isolation across threads.
 ### Troubleshooting ⚠️
 - Python version: `make setup` now checks for **Python 3.10+** and will fail with a clear message if your `python` is older. If you see that message, install a newer Python and ensure `python` on your PATH points to the new version (or run `python3.10 -m venv .venv` manually before re-running `make setup`).
 
@@ -192,3 +217,5 @@ Authorization: Bearer <access_token>
 - To reset the DB quickly during development: stop the server, remove `gunners.db`, and re-run `python -m project.init_db` or use migrations.
 
 ---
+
+If you'd like, I can add a `conftest.py` to centralize test DB setup/teardown or convert tests to use per-test temporary DB files. 🔧

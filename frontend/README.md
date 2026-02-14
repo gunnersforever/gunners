@@ -27,6 +27,10 @@ This is the React frontend for the Portfolio Management Tool, built with Vite an
    ```
    # for debug mode:  DEBUG=vite:* npm run dev
 
+   Note: The top-level `Makefile` includes convenient shortcuts if you prefer:
+   - `make start-frontend` — installs dependencies and starts the frontend dev server
+   - `make dev` — starts both backend and frontend (backend runs in the background); ensure you've run `make setup` first or installed backend deps manually
+
 2. Open your browser and go to `http://localhost:5173`
 
 The app will automatically reload when you make changes to the source code.
@@ -39,6 +43,15 @@ npm run build
 ```
 
 The built files will be in the `dist` directory. You can serve them using any static file server.
+
+Quick prod smoke test with Vite preview:
+```
+npm run preview -- --host 0.0.0.0 --port 5173
+```
+
+Makefile shortcuts from the repo root:
+- `make build-frontend`
+- `make preview-frontend`
 
 ## Features
 

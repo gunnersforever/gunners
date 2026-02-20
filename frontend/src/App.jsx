@@ -282,8 +282,17 @@ function App() {
     try {
       const { authFetch } = await import('./api');
       const portfolioCsv = portfolio.length
-        ? `symbol,quantity,total_cost,avg_cost\n${portfolio.map((r) => `${r.ticker || r.symbol},"${r.quantity}","${r.totalcost}","${(Number(r.totalcost) / Number(r.quantity)).toFixed(2)}"`).join('\n')}`
-        : 'symbol,quantity,total_cost,avg_cost\n(empty portfolio)';
+        ? `symbol,quantity,avgcost,curprice,lasttransactiondate\n${portfolio.map((r) => {
+            const avgCost = Number(r.avgcost) || (Number(r.totalcost) / Number(r.quantity)) || 0;
+            return `${r.ticker || r.symbol},"${r.quantity}","${avgCost.toFixed(2)}","${r.curprice || ''}","${r.lasttransactiondate || ''}"`;
+          }).join('\n')}`
+        : 'symbol,quantity,avgcost,curprice,lasttransactiondate\n(empty portfolio)';
+
+      const totalPortfolioValue = portfolio.reduce((sum, r) => {
+        const qty = Number(r.quantity) || 0;
+        const price = Number(r.curprice) || Number(r.avgcost) || (Number(r.totalcost) / qty) || 0;
+        return sum + (qty * price);
+      }, 0);
 
       const prompt = `You are a professional financial advisor specializing in offering solid, non-biased, sector-neutral investment advices based on the age, risk profile, risk appetite, intended investment horizon and the existing portfolio (attached to this prompt) of the user. Your advice should also leverage publicly available market news and trend, giving a slight tilt towards risk adjusted low MER ETFs than individual stocks, avoiding any bespoke options strategies (covered call, protective put etc.). Your suggestion could be a mixture of selling some existing portfolio and buying some suggestive stocks in the view of balancing the potential outcome of the suggestions, in order to meet with the investment horizon, risk appetite, risk profile, age of the user.
 
@@ -293,8 +302,18 @@ User Profile:
 - Risk Appetite: ${advisorAppetite}
 - Investment Horizon: ${advisorHorizon} (${horizonDurations[advisorHorizon]})
 
-Existing Portfolio (CSV):
+Existing Portfolio (CSV format: symbol,quantity,avgcost,curprice,lasttransactiondate):
 ${portfolioCsv}
+
+IMPORTANT GUARDRAILS:
+1. The aggregate total value of all BUY recommendations must NOT exceed 50% of the current total portfolio valuation (current portfolio value: $${totalPortfolioValue.toFixed(2)}).
+2. The aggregate total value of all SELL recommendations must NOT exceed 50% of the current total portfolio valuation.
+3. For BUY recommendations, each security must meet ALL of the following criteria:
+   a) Must be a liquid security or ETF with sufficient daily trading volume
+   b) Must have at least 1 full year (12 months) of historical track record with at least one year-end financial results available
+   c) If the recommended ticker is an ETF, it must be ranked among the top 5 in terms of having the LOWEST Management Expense Ratio (MER) and HIGHEST turnover liquidity among comparable similar ETFs by other issuers in the market
+
+Note: For the portfolio CSV, focus ONLY on the first four columns (symbol, quantity, avgcost, curprice) for your analysis. The lasttransactiondate column is for reference only.
 
 Confidence should be a number from 0 to 100.
 
@@ -429,10 +448,60 @@ Return ONLY valid JSON with this structure:
         quantity: quantityValue,
         totalcost,
       };
+    }).filter((row) => {
+      const qty = Number(row.quantity);
+      return !Number.isFinite(qty) || qty > 0;
     });
   };
 
-  const formatDateUtcShort = (isoString) => {
+  const refreshPortfolioFromServer = async () => {
+    try {
+      const { authFetch } = await import('./api');
+      const response = await authFetch(`${API_BASE}/portfolio`);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || !Array.isArray(data.portfolio)) return false;
+      const nextPortfolio = normalizePortfolioRows(data.portfolio);
+      setPortfolio(nextPortfolio);
+      refreshPricesForSymbols(getPortfolioSymbols(nextPortfolio), { merge: false });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const resetAdvisorState = () => {
+    setAdvisorAge('');
+    setAdvisorRisk('Balanced');
+    setAdvisorAppetite('Medium');
+    setAdvisorHorizon('Medium');
+    setAdvisorLoading(false);
+    setAdvisorElapsed(0);
+    setAdvisorRecs([]);
+    setAdvisorResponseReceived(false);
+    setAdvisorRawResponse('');
+    setAdvisorSelected({});
+    setAdvisorSubmitQueue([]);
+    setAdvisorSubmitIndex(0);
+    setAdvisorSubmitActive(false);
+    setAdvisorCompleted({});
+    setAdvisorInputsCollapsed(false);
+    setAdvisorHistory([]);
+    setAdvisorCompareId('');
+    setAdvisorDrawerOpen(false);
+  };
+
+  const resetPortfolioState = () => {
+    setPortfolio([]);
+    setPriceMap({});
+    setSavedFileUrl('');
+    setSaveFile('');
+    setAction('buy');
+    setSymbol('');
+    setQuantity('');
+    setPrice(null);
+  };
+
+  const formatDateLocalShort = (isoString) => {
     if (!isoString) return '';
     let s = isoString.replace(' ', 'T');
     if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
@@ -442,16 +511,16 @@ Return ONLY valid JSON with this structure:
     if (isNaN(d.getTime())) return isoString;
     const pad = (n, len = 2) => String(n).padStart(len, '0');
     const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-    const day = pad(d.getUTCDate());
-    const month = months[d.getUTCMonth()];
-    const year = String(d.getUTCFullYear()).slice(-2);
-    const hour = pad(d.getUTCHours());
-    const minute = pad(d.getUTCMinutes());
-    const second = pad(d.getUTCSeconds());
-    return `${day}-${month}-${year} ${hour}:${minute}:${second} UTC`;
+    const day = pad(d.getDate());
+    const month = months[d.getMonth()];
+    const year = String(d.getFullYear()).slice(-2);
+    const hour = pad(d.getHours());
+    const minute = pad(d.getMinutes());
+    const second = pad(d.getSeconds());
+    return `${day}-${month}-${year} ${hour}:${minute}:${second}`;
   };
 
-  const formatDateLocalCompact = (isoString) => formatDateUtcShort(isoString);
+  const formatDateLocalCompact = (isoString) => formatDateLocalShort(isoString);
 
   const normalizeConfidenceValue = (value) => {
     const numeric = Number(value);
@@ -461,9 +530,21 @@ Return ONLY valid JSON with this structure:
 
   const formatAdvisorTimestamp = (isoString) => {
     if (!isoString) return '';
-    const date = new Date(isoString);
-    if (Number.isNaN(date.getTime())) return isoString;
-    return date.toLocaleString();
+    let s = isoString.replace(' ', 'T');
+    if (!/[Zz]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      s = s + '+00:00';
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return isoString;
+    const pad = (n, len = 2) => String(n).padStart(len, '0');
+    const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    const day = pad(d.getDate());
+    const month = months[d.getMonth()];
+    const year = String(d.getFullYear()).slice(-2);
+    const hour = pad(d.getHours());
+    const minute = pad(d.getMinutes());
+    const second = pad(d.getSeconds());
+    return `${day}-${month}-${year} ${hour}:${minute}:${second}`;
   };
 
   const actionableAdvisorRecs = advisorRecs.filter((rec) => {
@@ -787,9 +868,9 @@ Return ONLY valid JSON with this structure:
       if (response.ok && data) {
         const nextPortfolio = normalizePortfolioRows(data.portfolio || []);
         setPortfolio(nextPortfolio);
-        const refreshSymbol = symbol.trim().toUpperCase();
-        if (refreshSymbol) {
-          refreshPricesForSymbols([refreshSymbol], { merge: true });
+        refreshPricesForSymbols(getPortfolioSymbols(nextPortfolio), { merge: false });
+        if (nextPortfolio.length === 0) {
+          void refreshPortfolioFromServer();
         }
         setError('');
         handleShowSnackbar(data.message || 'Transaction completed', 'success');
@@ -854,7 +935,9 @@ Return ONLY valid JSON with this structure:
         const symbol = row.symbol || row.ticker || '';
         const quantity = row.quantity ?? '';
         const avgcost = row.avgcost ?? '';
-        const curprice = row.curprice ?? '';
+        // Use latest price from cache if available, otherwise use row's curprice
+        const cachedPrice = priceMap[symbol.toUpperCase()];
+        const curprice = cachedPrice !== undefined && Number.isFinite(cachedPrice) ? cachedPrice : (row.curprice ?? '');
         const lasttransactiondate = row.lasttransactiondate ?? '';
         return [symbol, quantity, avgcost, curprice, lasttransactiondate];
       });
@@ -896,16 +979,10 @@ Return ONLY valid JSON with this structure:
     await logoutUser();
     setMode('light');
     setLoggedInUser('');
-    setPortfolio([]);
-    setPriceMap({});
     setError('');
-    setSavedFileUrl('');
-    setSaveFile('');
-    setSymbol('');
-    setQuantity('');
-    setPrice(null);
-    setAdvisorHistory([]);
-    setAdvisorCompareId('');
+    resetPortfolioState();
+    resetAdvisorState();
+    setActiveTab(0);
     setScreen('login');
   };
 
@@ -1012,12 +1089,9 @@ Return ONLY valid JSON with this structure:
                   if (res.theme_mode) setMode(res.theme_mode);
                   setError('');
                   setLoggedInUser(username);
-                  setPortfolio([]);
-                  setSavedFileUrl('');
-                  setSaveFile('');
-                  setSymbol('');
-                  setQuantity('');
-                  setPrice(null);
+                  resetPortfolioState();
+                  resetAdvisorState();
+                  setActiveTab(0);
                   setScreen('load');
                 }
               }}>
@@ -1038,12 +1112,9 @@ Return ONLY valid JSON with this structure:
                   if (res.theme_mode) setMode(res.theme_mode);
                   setError('');
                   setLoggedInUser(username);
-                  setPortfolio([]);
-                  setSavedFileUrl('');
-                  setSaveFile('');
-                  setSymbol('');
-                  setQuantity('');
-                  setPrice(null);
+                  resetPortfolioState();
+                  resetAdvisorState();
+                  setActiveTab(0);
                   setScreen('load');
                 }
               }}>
@@ -1199,7 +1270,7 @@ Return ONLY valid JSON with this structure:
                               );
                             })()}
                             <TableCell sx={{ whiteSpace: 'nowrap', py: 0.75, fontSize: '0.75rem' }}>
-                              {formatDateUtcShort(row.lasttransactiondate)}
+                              {formatDateLocalShort(row.lasttransactiondate)}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -1640,7 +1711,13 @@ Return ONLY valid JSON with this structure:
         </DialogActions>
       </Dialog>
 
-      <Snackbar open={snackbarOpen} autoHideDuration={4000} onClose={handleCloseSnackbar}>
+      <Snackbar 
+        open={snackbarOpen} 
+        autoHideDuration={5000} 
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+        sx={{ mt: 8 }}
+      >
         <Alert onClose={handleCloseSnackbar} severity={snackbarSeverity} sx={{ width: '100%' }}>
           {snackbarMessage}
         </Alert>

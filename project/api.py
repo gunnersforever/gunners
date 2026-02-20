@@ -231,6 +231,21 @@ def attach_ticker_names(rows, db: Session, force_refresh: bool = False):
     return rows
 
 
+def filter_zero_holdings(rows):
+    if not isinstance(rows, list):
+        return []
+    filtered = []
+    for row in rows:
+        try:
+            qty = float(row.get('quantity', 0) or 0)
+        except (TypeError, ValueError):
+            filtered.append(row)
+            continue
+        if qty > 0:
+            filtered.append(row)
+    return filtered
+
+
 def backfill_ticker_metadata():
     if not ENABLE_TICKER_BACKFILL:
         return
@@ -498,6 +513,7 @@ def get_portfolio(name: str = None, username: str = Depends(require_auth), db: S
             'curprice': str(h.curprice) if h.curprice is not None else '',
             'lasttransactiondate': h.lasttransactiondate or '',
         })
+    rows = filter_zero_holdings(rows)
     attach_ticker_names(rows, db)
     try:
         sorted_port = sorted(rows, key=lambda r: __import__('pandas').to_datetime(r.get('lasttransactiondate')), reverse=True)
@@ -535,6 +551,7 @@ def load_portfolio(file: UploadFile = File(...), name: str = None, username: str
         rows = []
         for row in reader:
             rows.append(row)
+        rows = filter_zero_holdings(rows)
         pname = name or db.query(models.User).filter(models.User.username == username).first().active_portfolio or 'default'
         user = db.query(models.User).filter(models.User.username == username).first()
         portfolio = next((p for p in user.portfolios if p.name == pname), None)
@@ -571,11 +588,14 @@ def save_portfolio(data: dict, username: str = Depends(require_auth), db: Sessio
     rows = []
     for h in portfolio.holdings:
         rows.append({'symbol': h.symbol, 'quantity': str(h.quantity), 'avgcost': str(h.avgcost) if h.avgcost is not None else '', 'curprice': str(h.curprice) if h.curprice is not None else '', 'lasttransactiondate': h.lasttransactiondate or ''})
+    rows = filter_zero_holdings(rows)
     # save file under username prefix to avoid collisions
     safe_filename = f"{username}_{filename}"
     full_path = os.path.join(os.path.dirname(__file__), safe_filename)
     logging.info("Saving to: %s", full_path)
     try:
+        if not rows:
+            raise HTTPException(status_code=400, detail='No holdings to save')
         logging.info("Saving portfolio %s with %d records for user %s", pname, len(rows), username)
         message = write_portfolio(rows, full_path)
         logging.info("Save result: %s", message)
@@ -605,11 +625,14 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         if cached_price is None:
             raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
         new_rows, message = buy_ticker(rows, symbol, str(quantity), price=cached_price)
+        new_rows = filter_zero_holdings(new_rows)
         # replace holdings
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
             qty_val = float(r.get('quantity') or 0)
+            if qty_val <= 0:
+                continue
             totalcost_val = r.get('totalcost')
             avgcost_val = r.get('avgcost')
             if (avgcost_val is None or avgcost_val == '') and qty_val:
@@ -666,10 +689,13 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
         if cached_price is None:
             raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
         new_rows, message = sell_ticker(rows, symbol, str(quantity), price=cached_price)
+        new_rows = filter_zero_holdings(new_rows)
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
             qty_val = float(r.get('quantity') or 0)
+            if qty_val <= 0:
+                continue
             totalcost_val = r.get('totalcost')
             avgcost_val = r.get('avgcost')
             if (avgcost_val is None or avgcost_val == '') and qty_val:

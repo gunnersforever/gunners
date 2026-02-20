@@ -126,6 +126,7 @@ def sell_ticker(holdingslist, symbol, amt, price=_PRICE_UNSET):
                     existing_totalcost = _compute_totalcost(rowdict, existingqty)
                     rowdict["quantity"] = existingqty - amt_int
                     rowdict["totalcost"] = round(existing_totalcost - (amt_int * tickerprice), 2)
+                    rowdict["curprice"] = tickerprice
                     # record UTC timestamp for the transaction
                     rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                     subtracted = True
@@ -167,6 +168,7 @@ def buy_ticker(holdingslist, symbol, amt, price=_PRICE_UNSET):
                 existing_totalcost = _compute_totalcost(rowdict, existingqty)
                 rowdict["quantity"] = existingqty + amt_int
                 rowdict["totalcost"] = round(existing_totalcost + (amt_int * tickerprice), 2)
+                rowdict["curprice"] = tickerprice
                 # record UTC timestamp for the transaction
                 rowdict["lasttransactiondate"] = pandas.Timestamp.now(tz='UTC').isoformat()
                 added = True
@@ -174,7 +176,7 @@ def buy_ticker(holdingslist, symbol, amt, price=_PRICE_UNSET):
         if not added:
             # use UTC ISO timestamp for transaction time
             utcnow = pandas.Timestamp.now(tz='UTC').isoformat()
-            rowdict = {"ticker": symbol, "quantity": amt_int, "totalcost": round((amt_int * tickerprice), 2), "lasttransactiondate": utcnow}
+            rowdict = {"ticker": symbol, "quantity": amt_int, "totalcost": round((amt_int * tickerprice), 2), "curprice": tickerprice, "lasttransactiondate": utcnow}
             holdingslist.append(rowdict)
         return holdingslist, f"Transaction completed successfully! Bought {amt_int} shares of {symbol} at ${tickerprice} each."
     except Exception as e:

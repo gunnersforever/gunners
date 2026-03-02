@@ -59,6 +59,15 @@ app.add_middleware(
 )
 
 ENABLE_HTTPS_REDIRECT = os.environ.get('ENABLE_HTTPS_REDIRECT', 'false').lower() in ('1', 'true', 'yes')
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'development')
+
+# Validate HTTPS is enabled in production
+if ENVIRONMENT == 'production' and not ENABLE_HTTPS_REDIRECT:
+    logging.warning(
+        'WARNING: HTTPS redirect is disabled in production environment. '
+        'Set ENABLE_HTTPS_REDIRECT=true for production deployment.'
+    )
+
 if ENABLE_HTTPS_REDIRECT:
     app.add_middleware(HTTPSRedirectMiddleware)
 
@@ -67,10 +76,41 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        
+        # Standard security headers
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        
+        # HSTS (HTTP Strict Transport Security) - only in production with HTTPS
+        if ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT:
+            response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        
+        # Content Security Policy (CSP) - prevents XSS attacks
+        # Note: 'unsafe-inline' is needed for Vite/React dev mode
+        csp_directives = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  # unsafe-eval needed for dev
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: https:",
+            "connect-src 'self' https://finnhub.io https://generativelanguage.googleapis.com",
+            "font-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        ]
+        
+        # Stricter CSP for production (remove unsafe-eval)
+        if ENVIRONMENT == 'production':
+            csp_directives[1] = "script-src 'self' 'unsafe-inline'"
+        
+        response.headers['Content-Security-Policy'] = '; '.join(csp_directives)
+        
+        # Additional security headers
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+        
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)

@@ -4,6 +4,17 @@ _PRICE_UNSET = object()
 _SYMBOLS_CACHE = {}
 
 
+def _get_api_key():
+    """Get Finnhub API key from environment with validation."""
+    api_key = os.environ.get('FINNHUB_API_KEY')
+    if not api_key:
+        raise ValueError(
+            'FINNHUB_API_KEY environment variable is required. '
+            'Set it in your .env file or export it before running the application.'
+        )
+    return api_key
+
+
 # Retrieve a saved portfolio (csv) into memory
 def retrieve_portfolio(infile):
     try:
@@ -190,7 +201,7 @@ def check_file_is_csv(filename):
 
 
 def get_ticker_price(symbol):
-    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
+    api_key = _get_api_key()
     url = f'https://finnhub.io/api/v1/quote?symbol={symbol}&token={api_key}'
     try:
         response = requests.get(url, timeout=10)
@@ -221,7 +232,7 @@ def _extract_profile_name(data):
 
 
 def get_stock_symbols(exchange, cache_ttl_seconds=86400):
-    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
+    api_key = _get_api_key()
     exchange_key = str(exchange or '').upper() or 'US'
     now = time.time()
     cached = _SYMBOLS_CACHE.get(exchange_key)
@@ -255,7 +266,7 @@ def get_ticker_name_from_symbols(symbol, exchange='US', cache_ttl_seconds=86400)
 
 
 def get_ticker_name(symbol, exchange='US', cache_ttl_seconds=86400):
-    api_key = os.environ.get('FINNHUB_API_KEY', 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30')
+    api_key = _get_api_key()
     profile_url = f'https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={api_key}'
     etf_url = f'https://finnhub.io/api/v1/etf/profile?symbol={symbol}&token={api_key}'
     search_url = f'https://finnhub.io/api/v1/search?q={symbol}&token={api_key}'

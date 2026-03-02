@@ -1,4 +1,7 @@
 import os
+# Set test API key before importing modules that require it
+if not os.environ.get('FINNHUB_API_KEY'):
+    os.environ['FINNHUB_API_KEY'] = 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30'  # Test key
 # Ensure tests use an in-memory database to avoid mixing with existing file DB
 os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
 from project import get_ticker_price, check_file_is_csv, write_portfolio, retrieve_portfolio

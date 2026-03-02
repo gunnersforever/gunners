@@ -92,6 +92,7 @@ TICKER_NAME_TTL_SECONDS = TICKER_NAME_TTL_DAYS * 86400
 FINNHUB_SYMBOLS_EXCHANGE = os.environ.get('FINNHUB_SYMBOLS_EXCHANGE', 'US')
 FINNHUB_SYMBOLS_CACHE_TTL_SECONDS = int(os.environ.get('FINNHUB_SYMBOLS_CACHE_TTL_SECONDS', '604800'))
 ENABLE_TICKER_BACKFILL = os.environ.get('ENABLE_TICKER_BACKFILL', 'false').lower() in ('1', 'true', 'yes')
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get('MAX_UPLOAD_SIZE_BYTES', 5 * 1024 * 1024))  # Default 5MB
 
 
 def utcnow():
@@ -541,12 +542,19 @@ def reset_portfolio(username: str = Depends(require_auth), db: Session = Depends
 
 
 @app.post("/portfolio/load")
-def load_portfolio(file: UploadFile = File(...), name: str = None, username: str = Depends(require_auth), db: Session = Depends(get_db)):
+async def load_portfolio(file: UploadFile = File(...), name: str = None, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     logging.info("Load request: %s for user %s", file.filename, username)
     if not file.filename.lower().endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
     try:
-        content = file.file.read().decode('utf-8')
+        # Read file contents with size validation
+        content_bytes = await file.read()
+        if len(content_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413, 
+                detail=f'File too large. Maximum size: {MAX_UPLOAD_SIZE_BYTES / (1024 * 1024):.1f}MB'
+            )
+        content = content_bytes.decode('utf-8')
         reader = csv.DictReader(io.StringIO(content))
         rows = []
         for row in reader:

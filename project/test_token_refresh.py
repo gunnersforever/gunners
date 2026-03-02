@@ -1,6 +1,10 @@
 import os
 import tempfile
 
+# Set test API key before importing modules that require it
+if not os.environ.get('FINNHUB_API_KEY'):
+    os.environ['FINNHUB_API_KEY'] = 'd619kb9r01qn5qe72j2gd619kb9r01qn5qe72j30'  # Test key
+
 DB_PATH = os.path.join(tempfile.gettempdir(), 'gunners_test_token_refresh.db')
 if os.path.exists(DB_PATH):
     os.remove(DB_PATH)

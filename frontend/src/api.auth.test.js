@@ -1,16 +1,16 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loginUser, getAccessToken, getRefreshToken, clearTokens } from './api';
+import { loginUser, getCSRFToken, setCSRFToken, clearAuth } from './api';
 
 beforeEach(() => { globalThis.fetch = vi.fn(); });
-afterEach(() => { vi.restoreAllMocks(); clearTokens(); });
+afterEach(() => { vi.restoreAllMocks(); clearAuth(); });
 
 describe('loginUser', () => {
-  it('stores tokens when login succeeds', async () => {
-    globalThis.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'a1', refresh_token: 'r1' }) });
+  it('stores CSRF token when login succeeds', async () => {
+    globalThis.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ csrf_token: 'token123' }) });
     const res = await loginUser('test','pw');
     expect(res.ok).toBe(true);
-    expect(getAccessToken()).toBe('a1');
-    expect(getRefreshToken()).toBe('r1');
+    // CSRF token should be stored in memory
+    expect(getCSRFToken()).toBe('token123');
   });
 
   it('returns error on bad credentials', async () => {

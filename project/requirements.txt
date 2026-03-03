@@ -14,3 +14,4 @@ pytest
 google-generativeai
 slowapi
 sentry-sdk
+itsdangerous

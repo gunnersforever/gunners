@@ -85,6 +85,10 @@ def test_security_headers_in_production():
             os.environ['ENVIRONMENT'] = original_env
         else:
             os.environ.pop('ENVIRONMENT', None)
+        
+        # Reload api module back to development mode for subsequent tests
+        import importlib
+        importlib.reload(api)
 
 
 def test_permissions_policy_header():

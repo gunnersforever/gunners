@@ -21,13 +21,23 @@ from project import init_db
 # correct schema the application will use.
 init_db.init_db()
 from project import api
+# Reload api module to ensure it uses the correct DATABASE_URL after other tests might have reloaded it
+import importlib
+importlib.reload(api)
 client = TestClient(api.app)
 
 USERNAME = 'testuser'
 PASSWORD = 'TestPass12345'
 
-def auth_headers(token):
-    return {'Authorization': f'Bearer {token}'}
+def get_csrf_token(response):
+    """Extract CSRF token from login/refresh response."""
+    data = response.json()
+    return data.get('csrf_token', '')
+
+def auth_request(client_obj, method, path, **kwargs):
+    """Make authenticated request using cookies (no need for explicit headers)."""
+    # Cookies are automatically handled by TestClient
+    return getattr(client_obj, method)(path, **kwargs)
 
 def test_register_login_create_buy_save_download(tmp_path):
     # register
@@ -37,22 +47,23 @@ def test_register_login_create_buy_save_download(tmp_path):
     # login
     r = client.post('/login', json={'username': USERNAME, 'password': PASSWORD})
     assert r.status_code == 200
-    access = r.json().get('access_token')
-    assert access
+    csrf_token = get_csrf_token(r)
+    assert csrf_token  # CSRF token should be present
+    # Cookies are automatically stored in client
 
-    # create portfolio
-    r = client.post('/portfolio/create', json={'name': 'Test1'}, headers=auth_headers(access))
+    # create portfolio (cookies sent automatically, add CSRF token)
+    r = client.post('/portfolio/create', json={'name': 'Test1'}, headers={'X-CSRF-Token': csrf_token})
     assert r.status_code == 200
 
     # buy AAPL
-    r = client.post('/buy', json={'symbol': 'AAPL', 'quantity': 1, 'portfolio': 'Test1'}, headers=auth_headers(access))
+    r = client.post('/buy', json={'symbol': 'AAPL', 'quantity': 1, 'portfolio': 'Test1'}, headers={'X-CSRF-Token': csrf_token})
     assert r.status_code == 200
     data = r.json()
     assert 'AAPL' in [h['symbol'] for h in data['portfolio']]
 
     # save portfolio
     fname = 'out_test.csv'
-    r = client.post('/portfolio/save', json={'filename': fname, 'portfolio': 'Test1'}, headers=auth_headers(access))
+    r = client.post('/portfolio/save', json={'filename': fname, 'portfolio': 'Test1'}, headers={'X-CSRF-Token': csrf_token})
     assert r.status_code == 200
     saved = r.json()
     assert saved.get('saved_count') == 1

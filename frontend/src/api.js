@@ -1,25 +1,23 @@
-// Simple auth token helpers (stored in localStorage)
-const ACCESS_KEY = 'gunners_access_token';
-const REFRESH_KEY = 'gunners_refresh_token';
+// Auth helpers - now using httpOnly cookies for tokens
+// Only store non-sensitive data (username, theme) in localStorage
 const USER_KEY = 'gunners_user';
 const THEME_KEY = 'gunners_theme_mode';
 
-export function getAccessToken() {
-  return localStorage.getItem(ACCESS_KEY) || '';
+// CSRF token stored in memory only (not localStorage)
+let csrfToken = '';
+
+export function getCSRFToken() {
+  return csrfToken;
 }
-export function getRefreshToken() {
-  return localStorage.getItem(REFRESH_KEY) || '';
+
+export function setCSRFToken(token) {
+  csrfToken = token;
 }
-export function clearTokens() {
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
+
+export function clearAuth() {
+  csrfToken = '';
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(THEME_KEY);
-}
-export function setTokens(access, refresh, username) {
-  if (access) localStorage.setItem(ACCESS_KEY, access);
-  if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
-  if (username) localStorage.setItem(USER_KEY, username);
 }
 
 export function setThemeMode(themeMode) {
@@ -29,20 +27,28 @@ export function setThemeMode(themeMode) {
 export function getThemeMode() {
   return localStorage.getItem(THEME_KEY) || '';
 }
+
 export function getUsername() {
   return localStorage.getItem(USER_KEY) || '';
 }
 
-// Try to refresh access token using refresh token
+export function setUsername(username) {
+  if (username) localStorage.setItem(USER_KEY, username);
+}
+
+// Try to refresh access token using refresh token (now in httpOnly cookie)
 export async function refreshToken() {
-  const refresh = getRefreshToken();
-  if (!refresh) return false;
   try {
-    const response = await fetch('/api/token/refresh', { method: 'POST', headers: { Authorization: `Bearer ${refresh}` } });
+    const response = await fetch('/api/token/refresh', { 
+      method: 'POST',
+      credentials: 'include'  // Send cookies
+    });
+    
     if (!response.ok) return false;
+    
     const data = await response.json().catch(() => null);
-    if (data && data.access_token && data.refresh_token) {
-      setTokens(data.access_token, data.refresh_token, getUsername());
+    if (data && data.csrf_token) {
+      setCSRFToken(data.csrf_token);
       return true;
     }
   } catch {
@@ -52,34 +58,74 @@ export async function refreshToken() {
 }
 
 // Auth-aware fetch wrapper. Retries once after refresh.
+// Automatically includes cookies and CSRF token for state-changing operations
 export async function authFetch(path, opts = {}) {
   const headers = opts.headers ? { ...opts.headers } : {};
-  const access = getAccessToken();
-  if (access) headers.Authorization = `Bearer ${access}`;
-  const response = await fetch(path, { ...opts, headers });
+  
+  // Add CSRF token for state-changing operations
+  const method = (opts.method || 'GET').toUpperCase();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method) && csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  
+  // Always include credentials to send cookies
+  const response = await fetch(path, { 
+    ...opts, 
+    headers,
+    credentials: 'include'
+  });
+  
   if (response.status === 401) {
-    // try refresh
+    // Try refresh
     const ok = await refreshToken();
     if (!ok) return response;
-    // retry with new token
-    const newAccess = getAccessToken();
-    headers.Authorization = `Bearer ${newAccess}`;
-    return await fetch(path, { ...opts, headers });
+    
+    // Retry with refreshed token (cookie set automatically)
+    // Update CSRF token header
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method) && csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+    
+    return await fetch(path, { 
+      ...opts, 
+      headers,
+      credentials: 'include'
+    });
   }
+  
   return response;
 }
 
 export async function loginUser(username, password) {
   try {
-    const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+    const response = await fetch('/api/login', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ username, password }),
+      credentials: 'include'  // Important: receive cookies
+    });
+    
     if (!response.ok) {
       const data = await response.json().catch(() => null);
       return { ok: false, error: data && data.detail ? data.detail : `Server responded ${response.status}` };
     }
+    
     const data = await response.json();
-    setTokens(data.access_token, data.refresh_token, username);
+    
+    // Store CSRF token and non-sensitive data
+    if (data.csrf_token) {
+      setCSRFToken(data.csrf_token);
+    }
+    setUsername(username);
     if (data.theme_mode) setThemeMode(data.theme_mode);
-    return { ok: true, username, portfolios: data.portfolios || [], active: data.active, theme_mode: data.theme_mode };
+    
+    return { 
+      ok: true, 
+      username, 
+      portfolios: data.portfolios || [], 
+      active: data.active, 
+      theme_mode: data.theme_mode 
+    };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -111,18 +157,25 @@ export async function logoutUser() {
   try {
     await authFetch('/api/logout', { method: 'POST' }).catch(() => {});
   } catch {
-    return;
+    // Ignore errors
   }
-  clearTokens();
+  clearAuth();
 }
 
 export async function registerUser(username, password) {
   try {
-    const response = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+    const response = await fetch('/api/register', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ username, password }),
+      credentials: 'include'
+    });
+    
     if (!response.ok) {
       const data = await response.json().catch(() => null);
       return { ok: false, error: data && data.detail ? data.detail : `Server responded ${response.status}` };
     }
+    
     const data = await response.json().catch(() => null);
     return { ok: true, message: data && data.message ? data.message : 'Registered' };
   } catch (err) {

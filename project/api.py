@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -163,6 +164,25 @@ except Exception:
     pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     logging.warning('bcrypt not installed; using pbkdf2_sha256')
 
+# CSRF protection using itsdangerous
+from itsdangerous import URLSafeTimedSerializer
+import secrets
+
+CSRF_SECRET = os.environ.get('CSRF_SECRET') or secrets.token_hex(32)
+csrf_serializer = URLSafeTimedSerializer(CSRF_SECRET)
+
+def generate_csrf_token() -> str:
+    """Generate a CSRF token valid for 1 hour."""
+    return csrf_serializer.dumps(secrets.token_hex(16))
+
+def verify_csrf_token(token: str) -> bool:
+    """Verify a CSRF token is valid and not expired."""
+    try:
+        csrf_serializer.loads(token, max_age=3600)  # 1 hour expiry
+        return True
+    except:
+        return False
+
 
 from fastapi import Header, Depends
 
@@ -189,23 +209,36 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password, hashed)
 
-def require_auth(authorization: str = Header(None), db: Session = Depends(get_db)) -> str:
-    """Require an access token (short-lived)."""
-    if not authorization or not authorization.startswith('Bearer '):
+def require_auth(request: Request, db: Session = Depends(get_db)) -> str:
+    """Require an access token from httpOnly cookie."""
+    access_token = request.cookies.get('access_token')
+    if not access_token:
         raise HTTPException(status_code=401, detail='Authorization required')
-    token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'access').first()
+    
+    st = db.query(models.SessionToken).filter(
+        models.SessionToken.token == access_token, 
+        models.SessionToken.token_type == 'access'
+    ).first()
+    
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired token')
+    
     if st.expires_at and ensure_utc(st.expires_at) < utcnow():
-        # expired
         db.delete(st)
         db.commit()
         raise HTTPException(status_code=401, detail='Token expired')
+    
     user = db.query(models.User).filter(models.User.id == st.user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail='User not found')
+    
     return user.username
+
+def require_csrf(x_csrf_token: str = Header(None, alias='X-CSRF-Token')):
+    """Require and verify CSRF token for state-changing operations."""
+    if not x_csrf_token or not verify_csrf_token(x_csrf_token):
+        raise HTTPException(status_code=403, detail='Invalid or missing CSRF token')
+    return x_csrf_token
 
 def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
     symbol = (symbol or '').strip().upper()
@@ -396,27 +429,59 @@ def login(data: dict, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail='Database not initialized. Run `make init-db` or `alembic upgrade head`')
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail='Invalid credentials')
-    # issue access and refresh tokens
+    
+    # Issue access and refresh tokens
     access_token = uuid.uuid4().hex
     refresh_token = uuid.uuid4().hex
     access_expires = utcnow() + datetime.timedelta(minutes=15)  # short-lived access token
     refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)  # long-lived refresh token
+    
     st_access = models.SessionToken(token=access_token, user_id=user.id, token_type='access', expires_at=access_expires, created_at=utcnow())
     st_refresh = models.SessionToken(token=refresh_token, user_id=user.id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.commit()
+    
     portfolios = [p.name for p in user.portfolios]
     logging.info('User logged in: %s', username)
-    return {
-        'access_token': access_token,
-        'access_expires_at': access_expires.isoformat(),
-        'refresh_token': refresh_token,
-        'refresh_expires_at': refresh_expires.isoformat(),
+    
+    # Generate CSRF token
+    csrf_token = generate_csrf_token()
+    
+    # Create response with httpOnly cookies
+    response = JSONResponse(content={
+        'message': 'Login successful',
+        'username': username,
         'portfolios': portfolios,
         'active': user.active_portfolio or 'default',
         'theme_mode': user.theme_mode or 'light',
-    }
+        'csrf_token': csrf_token,  # Return CSRF token in response body
+    })
+    
+    # Set httpOnly cookies for tokens
+    is_secure = ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT
+    
+    response.set_cookie(
+        key='access_token',
+        value=access_token,
+        httponly=True,  # Prevents JavaScript access
+        secure=is_secure,  # HTTPS only in production
+        samesite='lax',  # CSRF protection
+        max_age=900,  # 15 minutes in seconds
+        path='/'
+    )
+    
+    response.set_cookie(
+        key='refresh_token',
+        value=refresh_token,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=TOKEN_EXPIRE_DAYS * 86400,  # Days to seconds
+        path='/'
+    )
+    
+    return response
 
 @app.get('/health')
 def health():
@@ -428,46 +493,96 @@ def health():
 
 @limiter.limit(RATE_LIMIT_AUTH)
 @app.post('/token/refresh')
-def refresh_token(request: Request, authorization: str = Header(None), db: Session = Depends(get_db)):
-    """Accept a refresh token in Authorization header and issue a new access token.
+def refresh_token(request: Request, db: Session = Depends(get_db)):
+    """Accept a refresh token from cookie and issue a new access token.
     We rotate the refresh token as well (delete old refresh token and create a new one).
-    Return both `access_token` and `refresh_token` (rotated) with expiries.
+    Return CSRF token and set new tokens in httpOnly cookies.
     """
-    if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(status_code=401, detail='Authorization required')
-    token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'refresh').first()
+    token = request.cookies.get('refresh_token')
+    if not token:
+        raise HTTPException(status_code=401, detail='Refresh token required')
+    
+    st = db.query(models.SessionToken).filter(
+        models.SessionToken.token == token, 
+        models.SessionToken.token_type == 'refresh'
+    ).first()
+    
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired refresh token')
+    
     if st.expires_at and ensure_utc(st.expires_at) < utcnow():
         db.delete(st)
         db.commit()
         raise HTTPException(status_code=401, detail='Refresh token expired')
-    # create new access token and rotate refresh token
+    
+    # Create new access token and rotate refresh token
     new_access = uuid.uuid4().hex
     new_refresh = uuid.uuid4().hex
     access_expires = utcnow() + datetime.timedelta(minutes=15)
     refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
+    
     st_access = models.SessionToken(token=new_access, user_id=st.user_id, token_type='access', expires_at=access_expires, created_at=utcnow())
     st_refresh = models.SessionToken(token=new_refresh, user_id=st.user_id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.delete(st)
     db.commit()
+    
     logging.info('Rotated refresh token for user_id %s', st.user_id)
-    return {'access_token': new_access, 'access_expires_at': access_expires.isoformat(), 'refresh_token': new_refresh, 'refresh_expires_at': refresh_expires.isoformat()}
+    
+    # Generate new CSRF token
+    csrf_token = generate_csrf_token()
+    
+    # Create response
+    response = JSONResponse(content={
+        'message': 'Token refreshed',
+        'csrf_token': csrf_token
+    })
+    
+    # Set new cookies
+    is_secure = ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT
+    
+    response.set_cookie(
+        key='access_token',
+        value=new_access,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=900,
+        path='/'
+    )
+    
+    response.set_cookie(
+        key='refresh_token',
+        value=new_refresh,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=TOKEN_EXPIRE_DAYS * 86400,
+        path='/'
+    )
+    
+    return response
 
 
 @app.post('/logout')
-def logout(username: str = Depends(require_auth), db: Session = Depends(get_db)):
+def logout(request: Request, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == username).first()
     if not user:
         raise HTTPException(status_code=404, detail='User not found')
-    # delete all session tokens
+    
+    # Delete all session tokens
     db.query(models.SessionToken).filter(models.SessionToken.user_id == user.id).delete()
     db.commit()
+    
     logging.info('User logged out: %s', username)
-    return {'message': 'Logged out'}
+    
+    # Create response and clear cookies
+    response = JSONResponse(content={'message': 'Logged out'})
+    response.delete_cookie(key='access_token', path='/')
+    response.delete_cookie(key='refresh_token', path='/')
+    
+    return response
 
 @app.get('/user/me')
 def me(username: str = Depends(require_auth), db: Session = Depends(get_db)):

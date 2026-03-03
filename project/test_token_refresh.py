@@ -16,14 +16,19 @@ from project import init_db
 # correct schema the application will use.
 init_db.init_db()
 from project import api
+# Reload api module to ensure it uses the correct DATABASE_URL after other tests might have reloaded it
+import importlib
+importlib.reload(api)
 client = TestClient(api.app)
 
 USERNAME = 'tokenuser'
 PASSWORD = 'TokenPass12345'
 
 
-def auth_headers(token):
-    return {'Authorization': f'Bearer {token}'}
+def get_csrf_token(response):
+    """Extract CSRF token from login/refresh response."""
+    data = response.json()
+    return data.get('csrf_token', '')
 
 
 def test_token_refresh_and_expiry():
@@ -32,13 +37,13 @@ def test_token_refresh_and_expiry():
     assert r.status_code == 200
     r = client.post('/login', json={'username': USERNAME, 'password': PASSWORD})
     assert r.status_code == 200
-    body = r.json()
-    access = body.get('access_token')
-    refresh = body.get('refresh_token')
-    assert access and refresh
+    
+    csrf_token = get_csrf_token(r)
+    assert csrf_token  # CSRF token should be present
+    # Cookies (access_token, refresh_token) are automatically stored in client
 
-    # access token works
-    r = client.get('/user/me', headers=auth_headers(access))
+    # access token works (cookie sent automatically)
+    r = client.get('/user/me')
     assert r.status_code == 200
 
     # expire access token artificially and ensure it is rejected
@@ -46,35 +51,58 @@ def test_token_refresh_and_expiry():
     from project import models
     import datetime
     db = SessionLocal()
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == access, models.SessionToken.token_type == 'access').first()
+    
+    # Get access token from cookies
+    access_token = client.cookies.get('access_token')
+    assert access_token
+    
+    st = db.query(models.SessionToken).filter(
+        models.SessionToken.token == access_token, 
+        models.SessionToken.token_type == 'access'
+    ).first()
     assert st
     st.expires_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1)
     db.add(st)
     db.commit()
 
-    r = client.get('/user/me', headers=auth_headers(access))
+    r = client.get('/user/me')
     assert r.status_code == 401
 
-    # use refresh token to get new tokens (rotating refresh)
-    r = client.post('/token/refresh', headers=auth_headers(refresh))
-    assert r.status_code == 200
-    body2 = r.json()
-    new_access = body2.get('access_token')
-    new_refresh = body2.get('refresh_token')
-    assert new_access and new_refresh and new_refresh != refresh
+    # Get refresh token from cookies before refreshing
+    old_refresh_token = client.cookies.get('refresh_token')
+    assert old_refresh_token
 
-    # old refresh should be invalid
-    r = client.post('/token/refresh', headers=auth_headers(refresh))
+    # use refresh token to get new tokens (rotating refresh)
+    # Cookies are sent automatically
+    r = client.post('/token/refresh')
+    assert r.status_code == 200
+    new_csrf_token = get_csrf_token(r)
+    assert new_csrf_token
+    # New cookies are automatically updated in client
+    
+    new_access_token = client.cookies.get('access_token')
+    new_refresh_token = client.cookies.get('refresh_token')
+    assert new_access_token and new_refresh_token and new_refresh_token != old_refresh_token
+
+    # old refresh should be invalid (simulate by manually setting old cookie)
+    # Create a new client with old refresh token
+    from fastapi.testclient import TestClient
+    test_client_2 = TestClient(api.app)
+    test_client_2.cookies.set('refresh_token', old_refresh_token)
+    r = test_client_2.post('/token/refresh')
     assert r.status_code == 401
 
     # new access works
-    r = client.get('/user/me', headers=auth_headers(new_access))
+    r = client.get('/user/me')
     assert r.status_code == 200
 
     # expire refresh token artificially and ensure it is rejected
-    st2 = db.query(models.SessionToken).filter(models.SessionToken.token == new_refresh, models.SessionToken.token_type == 'refresh').first()
+    st2 = db.query(models.SessionToken).filter(
+        models.SessionToken.token == new_refresh_token, 
+        models.SessionToken.token_type == 'refresh'
+    ).first()
     st2.expires_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)
     db.add(st2)
     db.commit()
-    r = client.post('/token/refresh', headers=auth_headers(new_refresh))
+    r = client.post('/token/refresh')
     assert r.status_code == 401

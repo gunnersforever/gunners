@@ -74,3 +74,15 @@ class AdvisorHistory(Base):
     recommendations_json = Column(Text, nullable=False, default='[]')
 
     user = relationship('User')
+
+class AuditLog(Base):
+    __tablename__ = 'audit_logs'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)  # nullable for failed logins
+    action = Column(String, nullable=False, index=True)  # 'login', 'register', 'buy', 'sell', 'create_portfolio', etc.
+    resource = Column(String, nullable=True)  # 'portfolio', 'holding', 'user', etc.
+    details = Column(Text, nullable=True)  # JSON or raw details
+    status = Column(String, nullable=False, default='success')  # 'success', 'failure'
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    ip_address = Column(String, nullable=True)  # for security tracking
+    username = Column(String, nullable=True, index=True)  # for convenience in failed logins

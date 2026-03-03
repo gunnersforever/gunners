@@ -39,7 +39,9 @@ async def lifespan(app):
 app = FastAPI(title="Portfolio Management API", version="1.0", lifespan=lifespan)
 
 RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
-RATE_LIMIT_AUTH = os.environ.get('RATE_LIMIT_AUTH', '10/minute')
+RATE_LIMIT_AUTH = os.environ.get('RATE_LIMIT_AUTH', '10/minute')  # login, refresh
+RATE_LIMIT_REGISTER = os.environ.get('RATE_LIMIT_REGISTER', '3/hour')  # stricter for registration
+RATE_LIMIT_API = os.environ.get('RATE_LIMIT_API', '30/minute')  # api operations
 limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT_DEFAULT])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -182,6 +184,30 @@ def verify_csrf_token(token: str) -> bool:
         return True
     except:
         return False
+
+
+def log_audit(db: Session, user_id: int = None, action: str = None, 
+              resource: str = None, details: str = None, status: str = 'success',
+              request: Request = None, username: str = None):
+    """Log an audit event."""
+    try:
+        ip_address = None
+        if request:
+            ip_address = request.headers.get('x-forwarded-for', request.client.host if request.client else None)
+        
+        audit = models.AuditLog(
+            user_id=user_id,
+            action=action,
+            resource=resource,
+            details=details,
+            status=status,
+            ip_address=ip_address,
+            username=username
+        )
+        db.add(audit)
+        db.commit()
+    except Exception as e:
+        logging.error(f'Failed to log audit event: {e}')
 
 
 from fastapi import Header, Depends
@@ -371,7 +397,7 @@ def get_recent_advisor_history(user_id: int, db: Session):
     )
     return [serialize_advisor_history(row) for row in rows]
 
-@limiter.limit(RATE_LIMIT_AUTH)
+@limiter.limit(RATE_LIMIT_REGISTER)
 @app.post('/register')
 def register(data: dict, request: Request, db: Session = Depends(get_db)):
     username = data.get('username')
@@ -413,6 +439,9 @@ def register(data: dict, request: Request, db: Session = Depends(get_db)):
     db.add(p)
     db.commit()
     logging.info('Registered new user: %s', username)
+    # Audit log successful registration
+    log_audit(db, user_id=user.id, action='register', resource='user', 
+              status='success', request=request, username=username)
     return {'message': 'User registered'}
 
 @limiter.limit(RATE_LIMIT_AUTH)
@@ -428,6 +457,9 @@ def login(data: dict, request: Request, db: Session = Depends(get_db)):
         logging.error('Database error during login: %s', e)
         raise HTTPException(status_code=503, detail='Database not initialized. Run `make init-db` or `alembic upgrade head`')
     if not user or not verify_password(password, user.password_hash):
+        # Audit log failed login attempt
+        log_audit(db, action='login', resource='user', status='failure', 
+                  request=request, username=username)
         raise HTTPException(status_code=401, detail='Invalid credentials')
     
     # Issue access and refresh tokens
@@ -444,6 +476,9 @@ def login(data: dict, request: Request, db: Session = Depends(get_db)):
     
     portfolios = [p.name for p in user.portfolios]
     logging.info('User logged in: %s', username)
+    # Audit log successful login
+    log_audit(db, user_id=user.id, action='login', resource='user', 
+              status='success', request=request, username=username)
     
     # Generate CSRF token
     csrf_token = generate_csrf_token()
@@ -584,6 +619,29 @@ def logout(request: Request, username: str = Depends(require_auth), db: Session 
     
     return response
 
+@app.get('/user/audit-log')
+def get_audit_log(username: str = Depends(require_auth), limit: int = 50, db: Session = Depends(get_db)):
+    """Get audit log for the authenticated user."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    logs = db.query(models.AuditLog).filter(
+        models.AuditLog.user_id == user.id
+    ).order_by(models.AuditLog.created_at.desc()).limit(limit).all()
+    
+    return [
+        {
+            'id': log.id,
+            'action': log.action,
+            'resource': log.resource,
+            'status': log.status,
+            'created_at': log.created_at.isoformat() if log.created_at else None,
+            'details': log.details
+        }
+        for log in logs
+    ]
+
 @app.get('/user/me')
 def me(username: str = Depends(require_auth), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == username).first()
@@ -640,6 +698,9 @@ def create_portfolio(data: dict, username: str = Depends(require_auth), db: Sess
     user.active_portfolio = name
     db.commit()
     logging.info('Created portfolio %s for user %s', name, username)
+    # Audit log portfolio creation
+    log_audit(db, user_id=user.id, action='create_portfolio', resource='portfolio',
+              details=f'Portfolio: {name}', status='success', username=username)
     return {'message': 'Portfolio created', 'active': name}
 
 @app.post('/portfolio/select')
@@ -819,6 +880,9 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Buy completed for %s: %s', username, message)
+        # Audit log successful buy operation
+        log_audit(db, user_id=user.id, action='buy', resource='holding', 
+                  details=f'{symbol} x {quantity}', status='success', username=username)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
         logging.error("Buy error: %s", e)
@@ -881,6 +945,9 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Sell completed for %s: %s', username, message)
+        # Audit log successful sell operation
+        log_audit(db, user_id=user.id, action='sell', resource='holding',
+                  details=f'{symbol} x {quantity}', status='success', username=username)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
         logging.error("Sell error: %s", e)

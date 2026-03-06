@@ -86,3 +86,19 @@ class AuditLog(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
     ip_address = Column(String, nullable=True)  # for security tracking
     username = Column(String, nullable=True, index=True)  # for convenience in failed logins
+
+class Transaction(Base):
+    __tablename__ = 'transactions'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    portfolio_id = Column(Integer, ForeignKey('portfolios.id'), nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    transaction_type = Column(String, nullable=False)  # 'buy' or 'sell'
+    quantity = Column(Float, nullable=False)
+    price = Column(Float, nullable=False)  # price per share at time of transaction
+    total_amount = Column(Float, nullable=False)  # quantity * price
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    notes = Column(Text, nullable=True)  # optional notes about the transaction
+
+    user = relationship('User')
+    portfolio = relationship('Portfolio')

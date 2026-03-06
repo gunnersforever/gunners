@@ -206,3 +206,29 @@ export async function fetchAdvisorHistory() {
   const data = await response.json().catch(() => null);
   return (data && data.history) || [];
 }
+
+export async function fetchAnalytics() {
+  try {
+    const response = await authFetch('/api/portfolio/analytics');
+    if (!response.ok) {
+      return { error: `Failed to fetch analytics: ${response.status}` };
+    }
+    const data = await response.json().catch(() => null);
+    return data || { error: 'Invalid analytics data' };
+  } catch {
+    return { error: 'Failed to fetch analytics' };
+  }
+}
+
+export async function fetchTransactions() {
+  try {
+    const response = await authFetch('/api/user/transactions');
+    if (!response.ok) {
+      return { transactions: [], error: `Failed to fetch transactions: ${response.status}` };
+    }
+    const data = await response.json().catch(() => null);
+    return { transactions: (data && data.transactions) || [], error: '' };
+  } catch {
+    return { transactions: [], error: 'Failed to fetch transactions' };
+  }
+}

@@ -96,6 +96,10 @@ function App() {
   const [advisorCompareId, setAdvisorCompareId] = useState('');
   const [advisorDrawerOpen, setAdvisorDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
+  const [analytics, setAnalytics] = useState(null);
+  const [transactions, setTransactions] = useState([]);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
 
   // Use a dev proxy path so browser requests go through Vite -> backend and avoid CORS/network issues
   const API_BASE = '/api'; // proxied to http://127.0.0.1:8000 by vite.config.js
@@ -234,6 +238,18 @@ function App() {
     const symbols = getPortfolioSymbols(portfolio);
     refreshPricesForSymbols(symbols, { merge: false });
   }, [screen, portfolio, priceMap]);
+
+  useEffect(() => {
+    if (screen === 'main' && activeTab === 0 && portfolio.length > 0) {
+      loadAnalytics();
+    }
+  }, [screen, activeTab, portfolio]);
+
+  useEffect(() => {
+    if (screen === 'main' && activeTab === 3) {
+      loadTransactions();
+    }
+  }, [screen, activeTab]);
 
   const handleShowSnackbar = (msg, severity = 'success') => {
     setSnackbarMessage(msg);
@@ -466,6 +482,46 @@ Return ONLY valid JSON with this structure:
       return true;
     } catch {
       return false;
+    }
+  };
+
+  const loadAnalytics = async () => {
+    setLoadingAnalytics(true);
+    try {
+      const { fetchAnalytics } = await import('./api');
+      const data = await fetchAnalytics();
+      if (data.error) {
+        setError(data.error);
+        setAnalytics(null);
+      } else {
+        setAnalytics(data);
+        setError('');
+      }
+    } catch (err) {
+      setError('Failed to load analytics');
+      setAnalytics(null);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
+
+  const loadTransactions = async () => {
+    setLoadingTransactions(true);
+    try {
+      const { fetchTransactions } = await import('./api');
+      const result = await fetchTransactions();
+      if (result.error) {
+        setError(result.error);
+        setTransactions([]);
+      } else {
+        setTransactions(result.transactions || []);
+        setError('');
+      }
+    } catch (err) {
+      setError('Failed to load transactions');
+      setTransactions([]);
+    } finally {
+      setLoadingTransactions(false);
     }
   };
 
@@ -1158,10 +1214,56 @@ Return ONLY valid JSON with this structure:
         <Tab label={isSmallScreen ? 'Portfolio' : 'My Portfolio'} />
         <Tab label={isSmallScreen ? 'Advisor' : 'Tyche AI Advisor'} />
         <Tab label={isSmallScreen ? 'Prefs' : 'Preference'} />
+        <Tab label="History" />
       </Tabs>
 
       {activeTab === 0 && (
         <Grid container spacing={1.5} alignItems="flex-start">
+          {/* Analytics Summary */}
+          <Grid size={{ xs: 12 }}>
+            <Card>
+              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                <Typography variant="h6" gutterBottom>Portfolio Analytics</Typography>
+                {loadingAnalytics ? (
+                  <CircularProgress size={24} />
+                ) : analytics ? (
+                  <Box>
+                    <Grid container spacing={2}>
+                      <Grid size={{ xs: 6, sm: 3 }}>
+                        <Typography variant="body2" color="textSecondary">Cost Basis</Typography>
+                        <Typography variant="h6">${analytics.cost_basis?.toFixed(2) || '0.00'}</Typography>
+                      </Grid>
+                      <Grid size={{ xs: 6, sm: 3 }}>
+                        <Typography variant="body2" color="textSecondary">Current Value</Typography>
+                        <Typography variant="h6">${analytics.current_value?.toFixed(2) || '0.00'}</Typography>
+                      </Grid>
+                      <Grid size={{ xs: 6, sm: 3 }}>
+                        <Typography variant="body2" color="textSecondary">Gain/Loss</Typography>
+                        <Typography 
+                          variant="h6" 
+                          color={(analytics.gain_loss || 0) >= 0 ? 'success.main' : 'error.main'}
+                        >
+                          {(analytics.gain_loss || 0) >= 0 ? '+' : ''}${analytics.gain_loss?.toFixed(2) || '0.00'}
+                        </Typography>
+                      </Grid>
+                      <Grid size={{ xs: 6, sm: 3 }}>
+                        <Typography variant="body2" color="textSecondary">Return %</Typography>
+                        <Typography 
+                          variant="h6" 
+                          color={(analytics.gain_loss_percent || 0) >= 0 ? 'success.main' : 'error.main'}
+                        >
+                          {(analytics.gain_loss_percent || 0) >= 0 ? '+' : ''}{analytics.gain_loss_percent?.toFixed(2) || '0.00'}%
+                        </Typography>
+                      </Grid>
+                    </Grid>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="textSecondary">No analytics available</Typography>
+                )}
+              </CardContent>
+            </Card>
+          </Grid>
+          
           <Grid size={{ xs: 12, md: 7 }} order={{ xs: 1, md: 1 }}>
             <Card sx={{ height: portfolioCardHeight, maxHeight: portfolioCardHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <CardContent sx={{ py: 1, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', '&:last-child': { pb: 1 } }}>
@@ -1670,6 +1772,58 @@ Return ONLY valid JSON with this structure:
               />
               <Typography variant="body2">Dark</Typography>
             </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === 3 && (
+        <Card>
+          <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Typography variant={isSmallScreen ? 'h6' : 'h5'} gutterBottom>
+              Transaction History
+            </Typography>
+            {loadingTransactions ? (
+              <CircularProgress size={24} />
+            ) : transactions.length === 0 ? (
+              <Typography variant="body2" color="textSecondary">No transactions found</Typography>
+            ) : (
+              <TableContainer component={Paper} sx={{ maxHeight: 600 }}>
+                <Table stickyHeader size="small">
+                  <TableHead>
+                    <TableRow>
+                      <StyledTableCell>Date</StyledTableCell>
+                      <StyledTableCell>Symbol</StyledTableCell>
+                      <StyledTableCell>Type</StyledTableCell>
+                      <StyledTableCell align="right">Qty</StyledTableCell>
+                      <StyledTableCell align="right">Price</StyledTableCell>
+                      <StyledTableCell align="right">Total</StyledTableCell>
+                      {!isSmallScreen && <StyledTableCell>Notes</StyledTableCell>}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {transactions.map((tx, idx) => (
+                      <TableRow key={idx}>
+                        <TableCell>{formatDateLocalShort(tx.created_at)}</TableCell>
+                        <TableCell>{tx.symbol.toUpperCase()}</TableCell>
+                        <TableCell>
+                          <Typography 
+                            variant="body2" 
+                            color={tx.transaction_type === 'buy' ? 'success.main' : 'error.main'}
+                            sx={{ fontWeight: 'medium' }}
+                          >
+                            {tx.transaction_type.toUpperCase()}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">{tx.quantity}</TableCell>
+                        <TableCell align="right">${tx.price.toFixed(2)}</TableCell>
+                        <TableCell align="right">${tx.total_amount.toFixed(2)}</TableCell>
+                        {!isSmallScreen && <TableCell>{tx.notes || '—'}</TableCell>}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
           </CardContent>
         </Card>
       )}

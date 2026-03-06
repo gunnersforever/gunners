@@ -642,6 +642,101 @@ def get_audit_log(username: str = Depends(require_auth), limit: int = 50, db: Se
         for log in logs
     ]
 
+@app.get('/user/transactions')
+def get_transactions(username: str = Depends(require_auth), limit: int = 100, 
+                     symbol: str = None, portfolio: str = None,
+                     db: Session = Depends(get_db)):
+    """Get transaction history for the authenticated user."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    query = db.query(models.Transaction).filter(models.Transaction.user_id == user.id)
+    
+    # Apply filters
+    if symbol:
+        query = query.filter(models.Transaction.symbol == symbol.upper())
+    if portfolio:
+        portfolio_obj = next((p for p in user.portfolios if p.name == portfolio), None)
+        if portfolio_obj:
+            query = query.filter(models.Transaction.portfolio_id == portfolio_obj.id)
+    
+    transactions = query.order_by(models.Transaction.created_at.desc()).limit(limit).all()
+    
+    return [
+        {
+            'id': t.id,
+            'symbol': t.symbol,
+            'transaction_type': t.transaction_type,
+            'quantity': t.quantity,
+            'price': t.price,
+            'total_amount': t.total_amount,
+            'created_at': t.created_at.isoformat() if t.created_at else None,
+            'portfolio_id': t.portfolio_id,
+            'notes': t.notes
+        }
+        for t in transactions
+    ]
+
+@app.get('/portfolio/analytics')
+def get_portfolio_analytics(username: str = Depends(require_auth), name: str = None, 
+                            db: Session = Depends(get_db)):
+    """Get analytics for a portfolio including total value, cost basis, and gain/loss."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    pname = name or user.active_portfolio or 'default'
+    portfolio = next((p for p in user.portfolios if p.name == pname), None)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail='Portfolio not found')
+    
+    # Calculate analytics
+    total_cost_basis = 0.0
+    total_current_value = 0.0
+    holdings_analytics = []
+    
+    for holding in portfolio.holdings:
+        if holding.quantity <= 0:
+            continue
+            
+        # Get current price
+        current_price = get_cached_price(holding.symbol, db, force_refresh=False)
+        if current_price is None:
+            current_price = holding.curprice or holding.avgcost or 0
+        
+        cost_basis = (holding.avgcost or 0) * holding.quantity
+        current_value = current_price * holding.quantity
+        gain_loss = current_value - cost_basis
+        gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+        
+        total_cost_basis += cost_basis
+        total_current_value += current_value
+        
+        holdings_analytics.append({
+            'symbol': holding.symbol,
+            'quantity': holding.quantity,
+            'avg_cost': holding.avgcost or 0,
+            'current_price': current_price,
+            'cost_basis': cost_basis,
+            'current_value': current_value,
+            'gain_loss': gain_loss,
+            'gain_loss_percent': gain_loss_percent
+        })
+    
+    total_gain_loss = total_current_value - total_cost_basis
+    total_gain_loss_percent = (total_gain_loss / total_cost_basis * 100) if total_cost_basis > 0 else 0
+    
+    return {
+        'portfolio_name': pname,
+        'total_cost_basis': total_cost_basis,
+        'total_current_value': total_current_value,
+        'total_gain_loss': total_gain_loss,
+        'total_gain_loss_percent': total_gain_loss_percent,
+        'holdings': holdings_analytics,
+        'num_holdings': len(holdings_analytics)
+    }
+
 @app.get('/user/me')
 def me(username: str = Depends(require_auth), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == username).first()
@@ -880,6 +975,20 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Buy completed for %s: %s', username, message)
+        
+        # Record transaction
+        transaction = models.Transaction(
+            user_id=user.id,
+            portfolio_id=portfolio.id,
+            symbol=symbol,
+            transaction_type='buy',
+            quantity=float(quantity),
+            price=cached_price,
+            total_amount=float(quantity) * cached_price
+        )
+        db.add(transaction)
+        db.commit()
+        
         # Audit log successful buy operation
         log_audit(db, user_id=user.id, action='buy', resource='holding', 
                   details=f'{symbol} x {quantity}', status='success', username=username)
@@ -945,6 +1054,20 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Sell completed for %s: %s', username, message)
+        
+        # Record transaction
+        transaction = models.Transaction(
+            user_id=user.id,
+            portfolio_id=portfolio.id,
+            symbol=symbol,
+            transaction_type='sell',
+            quantity=float(quantity),
+            price=cached_price,
+            total_amount=float(quantity) * cached_price
+        )
+        db.add(transaction)
+        db.commit()
+        
         # Audit log successful sell operation
         log_audit(db, user_id=user.id, action='sell', resource='holding',
                   details=f'{symbol} x {quantity}', status='success', username=username)

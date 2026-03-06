@@ -23,6 +23,18 @@ const makeQueuedFetch = (responses) => (
     if (String(url).includes('/advisor/history')) {
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ history: [] }) });
     }
+    if (String(url).includes('/portfolio/analytics')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({
+        cost_basis: 0,
+        current_value: 0,
+        gain_loss: 0,
+        gain_loss_percent: 0,
+        holdings: []
+      }) });
+    }
+    if (String(url).includes('/user/transactions')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ transactions: [] }) });
+    }
     if (String(url).includes('/gemini/advise')) {
       const next = responses.shift();
       if (next) {

@@ -1,7 +1,7 @@
 """add AuditLog model
 
-Revision ID: 0003_add_audit_log
-Revises: 0002_add_token_type
+Revision ID: 0008_add_audit_log
+Revises: 0007_add_transactions
 Create Date: 2026-03-03 00:00:00.000000
 """
 from alembic import op
@@ -9,8 +9,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '0003_add_audit_log'
-down_revision = '0002_add_token_type'
+revision = '0008_add_audit_log'
+down_revision = '0007_add_transactions'
 branch_labels = None
 depends_on = None
 

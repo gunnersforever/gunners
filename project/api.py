@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -38,7 +39,9 @@ async def lifespan(app):
 app = FastAPI(title="Portfolio Management API", version="1.0", lifespan=lifespan)
 
 RATE_LIMIT_DEFAULT = os.environ.get('RATE_LIMIT_DEFAULT', '200/minute')
-RATE_LIMIT_AUTH = os.environ.get('RATE_LIMIT_AUTH', '10/minute')
+RATE_LIMIT_AUTH = os.environ.get('RATE_LIMIT_AUTH', '10/minute')  # login, refresh
+RATE_LIMIT_REGISTER = os.environ.get('RATE_LIMIT_REGISTER', '3/hour')  # stricter for registration
+RATE_LIMIT_API = os.environ.get('RATE_LIMIT_API', '30/minute')  # api operations
 limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT_DEFAULT])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -59,6 +62,15 @@ app.add_middleware(
 )
 
 ENABLE_HTTPS_REDIRECT = os.environ.get('ENABLE_HTTPS_REDIRECT', 'false').lower() in ('1', 'true', 'yes')
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'development')
+
+# Validate HTTPS is enabled in production
+if ENVIRONMENT == 'production' and not ENABLE_HTTPS_REDIRECT:
+    logging.warning(
+        'WARNING: HTTPS redirect is disabled in production environment. '
+        'Set ENABLE_HTTPS_REDIRECT=true for production deployment.'
+    )
+
 if ENABLE_HTTPS_REDIRECT:
     app.add_middleware(HTTPSRedirectMiddleware)
 
@@ -67,10 +79,41 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        
+        # Standard security headers
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        
+        # HSTS (HTTP Strict Transport Security) - only in production with HTTPS
+        if ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT:
+            response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        
+        # Content Security Policy (CSP) - prevents XSS attacks
+        # Note: 'unsafe-inline' is needed for Vite/React dev mode
+        csp_directives = [
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'",  # unsafe-eval needed for dev
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: https:",
+            "connect-src 'self' https://finnhub.io https://generativelanguage.googleapis.com",
+            "font-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        ]
+        
+        # Stricter CSP for production (remove unsafe-eval)
+        if ENVIRONMENT == 'production':
+            csp_directives[1] = "script-src 'self' 'unsafe-inline'"
+        
+        response.headers['Content-Security-Policy'] = '; '.join(csp_directives)
+        
+        # Additional security headers
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+        
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -92,6 +135,7 @@ TICKER_NAME_TTL_SECONDS = TICKER_NAME_TTL_DAYS * 86400
 FINNHUB_SYMBOLS_EXCHANGE = os.environ.get('FINNHUB_SYMBOLS_EXCHANGE', 'US')
 FINNHUB_SYMBOLS_CACHE_TTL_SECONDS = int(os.environ.get('FINNHUB_SYMBOLS_CACHE_TTL_SECONDS', '604800'))
 ENABLE_TICKER_BACKFILL = os.environ.get('ENABLE_TICKER_BACKFILL', 'false').lower() in ('1', 'true', 'yes')
+MAX_UPLOAD_SIZE_BYTES = int(os.environ.get('MAX_UPLOAD_SIZE_BYTES', 5 * 1024 * 1024))  # Default 5MB
 
 
 def utcnow():
@@ -122,6 +166,49 @@ except Exception:
     pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     logging.warning('bcrypt not installed; using pbkdf2_sha256')
 
+# CSRF protection using itsdangerous
+from itsdangerous import URLSafeTimedSerializer
+import secrets
+
+CSRF_SECRET = os.environ.get('CSRF_SECRET') or secrets.token_hex(32)
+csrf_serializer = URLSafeTimedSerializer(CSRF_SECRET)
+
+def generate_csrf_token() -> str:
+    """Generate a CSRF token valid for 1 hour."""
+    return csrf_serializer.dumps(secrets.token_hex(16))
+
+def verify_csrf_token(token: str) -> bool:
+    """Verify a CSRF token is valid and not expired."""
+    try:
+        csrf_serializer.loads(token, max_age=3600)  # 1 hour expiry
+        return True
+    except:
+        return False
+
+
+def log_audit(db: Session, user_id: int = None, action: str = None, 
+              resource: str = None, details: str = None, status: str = 'success',
+              request: Request = None, username: str = None):
+    """Log an audit event."""
+    try:
+        ip_address = None
+        if request:
+            ip_address = request.headers.get('x-forwarded-for', request.client.host if request.client else None)
+        
+        audit = models.AuditLog(
+            user_id=user_id,
+            action=action,
+            resource=resource,
+            details=details,
+            status=status,
+            ip_address=ip_address,
+            username=username
+        )
+        db.add(audit)
+        db.commit()
+    except Exception as e:
+        logging.error(f'Failed to log audit event: {e}')
+
 
 from fastapi import Header, Depends
 
@@ -148,23 +235,36 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return pwd_context.verify(password, hashed)
 
-def require_auth(authorization: str = Header(None), db: Session = Depends(get_db)) -> str:
-    """Require an access token (short-lived)."""
-    if not authorization or not authorization.startswith('Bearer '):
+def require_auth(request: Request, db: Session = Depends(get_db)) -> str:
+    """Require an access token from httpOnly cookie."""
+    access_token = request.cookies.get('access_token')
+    if not access_token:
         raise HTTPException(status_code=401, detail='Authorization required')
-    token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'access').first()
+    
+    st = db.query(models.SessionToken).filter(
+        models.SessionToken.token == access_token, 
+        models.SessionToken.token_type == 'access'
+    ).first()
+    
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired token')
+    
     if st.expires_at and ensure_utc(st.expires_at) < utcnow():
-        # expired
         db.delete(st)
         db.commit()
         raise HTTPException(status_code=401, detail='Token expired')
+    
     user = db.query(models.User).filter(models.User.id == st.user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail='User not found')
+    
     return user.username
+
+def require_csrf(x_csrf_token: str = Header(None, alias='X-CSRF-Token')):
+    """Require and verify CSRF token for state-changing operations."""
+    if not x_csrf_token or not verify_csrf_token(x_csrf_token):
+        raise HTTPException(status_code=403, detail='Invalid or missing CSRF token')
+    return x_csrf_token
 
 def get_cached_price(symbol: str, db: Session, force_refresh: bool = False):
     symbol = (symbol or '').strip().upper()
@@ -231,6 +331,21 @@ def attach_ticker_names(rows, db: Session, force_refresh: bool = False):
     return rows
 
 
+def filter_zero_holdings(rows):
+    if not isinstance(rows, list):
+        return []
+    filtered = []
+    for row in rows:
+        try:
+            qty = float(row.get('quantity', 0) or 0)
+        except (TypeError, ValueError):
+            filtered.append(row)
+            continue
+        if qty > 0:
+            filtered.append(row)
+    return filtered
+
+
 def backfill_ticker_metadata():
     if not ENABLE_TICKER_BACKFILL:
         return
@@ -282,7 +397,7 @@ def get_recent_advisor_history(user_id: int, db: Session):
     )
     return [serialize_advisor_history(row) for row in rows]
 
-@limiter.limit(RATE_LIMIT_AUTH)
+@limiter.limit(RATE_LIMIT_REGISTER)
 @app.post('/register')
 def register(data: dict, request: Request, db: Session = Depends(get_db)):
     username = data.get('username')
@@ -324,6 +439,9 @@ def register(data: dict, request: Request, db: Session = Depends(get_db)):
     db.add(p)
     db.commit()
     logging.info('Registered new user: %s', username)
+    # Audit log successful registration
+    log_audit(db, user_id=user.id, action='register', resource='user', 
+              status='success', request=request, username=username)
     return {'message': 'User registered'}
 
 @limiter.limit(RATE_LIMIT_AUTH)
@@ -339,28 +457,66 @@ def login(data: dict, request: Request, db: Session = Depends(get_db)):
         logging.error('Database error during login: %s', e)
         raise HTTPException(status_code=503, detail='Database not initialized. Run `make init-db` or `alembic upgrade head`')
     if not user or not verify_password(password, user.password_hash):
+        # Audit log failed login attempt
+        log_audit(db, action='login', resource='user', status='failure', 
+                  request=request, username=username)
         raise HTTPException(status_code=401, detail='Invalid credentials')
-    # issue access and refresh tokens
+    
+    # Issue access and refresh tokens
     access_token = uuid.uuid4().hex
     refresh_token = uuid.uuid4().hex
     access_expires = utcnow() + datetime.timedelta(minutes=15)  # short-lived access token
     refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)  # long-lived refresh token
+    
     st_access = models.SessionToken(token=access_token, user_id=user.id, token_type='access', expires_at=access_expires, created_at=utcnow())
     st_refresh = models.SessionToken(token=refresh_token, user_id=user.id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.commit()
+    
     portfolios = [p.name for p in user.portfolios]
     logging.info('User logged in: %s', username)
-    return {
-        'access_token': access_token,
-        'access_expires_at': access_expires.isoformat(),
-        'refresh_token': refresh_token,
-        'refresh_expires_at': refresh_expires.isoformat(),
+    # Audit log successful login
+    log_audit(db, user_id=user.id, action='login', resource='user', 
+              status='success', request=request, username=username)
+    
+    # Generate CSRF token
+    csrf_token = generate_csrf_token()
+    
+    # Create response with httpOnly cookies
+    response = JSONResponse(content={
+        'message': 'Login successful',
+        'username': username,
         'portfolios': portfolios,
         'active': user.active_portfolio or 'default',
         'theme_mode': user.theme_mode or 'light',
-    }
+        'csrf_token': csrf_token,  # Return CSRF token in response body
+    })
+    
+    # Set httpOnly cookies for tokens
+    is_secure = ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT
+    
+    response.set_cookie(
+        key='access_token',
+        value=access_token,
+        httponly=True,  # Prevents JavaScript access
+        secure=is_secure,  # HTTPS only in production
+        samesite='lax',  # CSRF protection
+        max_age=900,  # 15 minutes in seconds
+        path='/'
+    )
+    
+    response.set_cookie(
+        key='refresh_token',
+        value=refresh_token,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=TOKEN_EXPIRE_DAYS * 86400,  # Days to seconds
+        path='/'
+    )
+    
+    return response
 
 @app.get('/health')
 def health():
@@ -372,46 +528,214 @@ def health():
 
 @limiter.limit(RATE_LIMIT_AUTH)
 @app.post('/token/refresh')
-def refresh_token(request: Request, authorization: str = Header(None), db: Session = Depends(get_db)):
-    """Accept a refresh token in Authorization header and issue a new access token.
+def refresh_token(request: Request, db: Session = Depends(get_db)):
+    """Accept a refresh token from cookie and issue a new access token.
     We rotate the refresh token as well (delete old refresh token and create a new one).
-    Return both `access_token` and `refresh_token` (rotated) with expiries.
+    Return CSRF token and set new tokens in httpOnly cookies.
     """
-    if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(status_code=401, detail='Authorization required')
-    token = authorization.split(' ', 1)[1]
-    st = db.query(models.SessionToken).filter(models.SessionToken.token == token, models.SessionToken.token_type == 'refresh').first()
+    token = request.cookies.get('refresh_token')
+    if not token:
+        raise HTTPException(status_code=401, detail='Refresh token required')
+    
+    st = db.query(models.SessionToken).filter(
+        models.SessionToken.token == token, 
+        models.SessionToken.token_type == 'refresh'
+    ).first()
+    
     if not st:
         raise HTTPException(status_code=401, detail='Invalid or expired refresh token')
+    
     if st.expires_at and ensure_utc(st.expires_at) < utcnow():
         db.delete(st)
         db.commit()
         raise HTTPException(status_code=401, detail='Refresh token expired')
-    # create new access token and rotate refresh token
+    
+    # Create new access token and rotate refresh token
     new_access = uuid.uuid4().hex
     new_refresh = uuid.uuid4().hex
     access_expires = utcnow() + datetime.timedelta(minutes=15)
     refresh_expires = utcnow() + datetime.timedelta(days=TOKEN_EXPIRE_DAYS)
+    
     st_access = models.SessionToken(token=new_access, user_id=st.user_id, token_type='access', expires_at=access_expires, created_at=utcnow())
     st_refresh = models.SessionToken(token=new_refresh, user_id=st.user_id, token_type='refresh', expires_at=refresh_expires, created_at=utcnow())
     db.add(st_access)
     db.add(st_refresh)
     db.delete(st)
     db.commit()
+    
     logging.info('Rotated refresh token for user_id %s', st.user_id)
-    return {'access_token': new_access, 'access_expires_at': access_expires.isoformat(), 'refresh_token': new_refresh, 'refresh_expires_at': refresh_expires.isoformat()}
+    
+    # Generate new CSRF token
+    csrf_token = generate_csrf_token()
+    
+    # Create response
+    response = JSONResponse(content={
+        'message': 'Token refreshed',
+        'csrf_token': csrf_token
+    })
+    
+    # Set new cookies
+    is_secure = ENVIRONMENT == 'production' or ENABLE_HTTPS_REDIRECT
+    
+    response.set_cookie(
+        key='access_token',
+        value=new_access,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=900,
+        path='/'
+    )
+    
+    response.set_cookie(
+        key='refresh_token',
+        value=new_refresh,
+        httponly=True,
+        secure=is_secure,
+        samesite='lax',
+        max_age=TOKEN_EXPIRE_DAYS * 86400,
+        path='/'
+    )
+    
+    return response
 
 
 @app.post('/logout')
-def logout(username: str = Depends(require_auth), db: Session = Depends(get_db)):
+def logout(request: Request, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.username == username).first()
     if not user:
         raise HTTPException(status_code=404, detail='User not found')
-    # delete all session tokens
+    
+    # Delete all session tokens
     db.query(models.SessionToken).filter(models.SessionToken.user_id == user.id).delete()
     db.commit()
+    
     logging.info('User logged out: %s', username)
-    return {'message': 'Logged out'}
+    
+    # Create response and clear cookies
+    response = JSONResponse(content={'message': 'Logged out'})
+    response.delete_cookie(key='access_token', path='/')
+    response.delete_cookie(key='refresh_token', path='/')
+    
+    return response
+
+@app.get('/user/audit-log')
+def get_audit_log(username: str = Depends(require_auth), limit: int = 50, db: Session = Depends(get_db)):
+    """Get audit log for the authenticated user."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    logs = db.query(models.AuditLog).filter(
+        models.AuditLog.user_id == user.id
+    ).order_by(models.AuditLog.created_at.desc()).limit(limit).all()
+    
+    return [
+        {
+            'id': log.id,
+            'action': log.action,
+            'resource': log.resource,
+            'status': log.status,
+            'created_at': log.created_at.isoformat() if log.created_at else None,
+            'details': log.details
+        }
+        for log in logs
+    ]
+
+@app.get('/user/transactions')
+def get_transactions(username: str = Depends(require_auth), limit: int = 100, 
+                     symbol: str = None, portfolio: str = None,
+                     db: Session = Depends(get_db)):
+    """Get transaction history for the authenticated user."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    query = db.query(models.Transaction).filter(models.Transaction.user_id == user.id)
+    
+    # Apply filters
+    if symbol:
+        query = query.filter(models.Transaction.symbol == symbol.upper())
+    if portfolio:
+        portfolio_obj = next((p for p in user.portfolios if p.name == portfolio), None)
+        if portfolio_obj:
+            query = query.filter(models.Transaction.portfolio_id == portfolio_obj.id)
+    
+    transactions = query.order_by(models.Transaction.created_at.desc()).limit(limit).all()
+    
+    return [
+        {
+            'id': t.id,
+            'symbol': t.symbol,
+            'transaction_type': t.transaction_type,
+            'quantity': t.quantity,
+            'price': t.price,
+            'total_amount': t.total_amount,
+            'created_at': t.created_at.isoformat() if t.created_at else None,
+            'portfolio_id': t.portfolio_id,
+            'notes': t.notes
+        }
+        for t in transactions
+    ]
+
+@app.get('/portfolio/analytics')
+def get_portfolio_analytics(username: str = Depends(require_auth), name: str = None, 
+                            db: Session = Depends(get_db)):
+    """Get analytics for a portfolio including total value, cost basis, and gain/loss."""
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    
+    pname = name or user.active_portfolio or 'default'
+    portfolio = next((p for p in user.portfolios if p.name == pname), None)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail='Portfolio not found')
+    
+    # Calculate analytics
+    total_cost_basis = 0.0
+    total_current_value = 0.0
+    holdings_analytics = []
+    
+    for holding in portfolio.holdings:
+        if holding.quantity <= 0:
+            continue
+            
+        # Get current price
+        current_price = get_cached_price(holding.symbol, db, force_refresh=False)
+        if current_price is None:
+            current_price = holding.curprice or holding.avgcost or 0
+        
+        cost_basis = (holding.avgcost or 0) * holding.quantity
+        current_value = current_price * holding.quantity
+        gain_loss = current_value - cost_basis
+        gain_loss_percent = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
+        
+        total_cost_basis += cost_basis
+        total_current_value += current_value
+        
+        holdings_analytics.append({
+            'symbol': holding.symbol,
+            'quantity': holding.quantity,
+            'avg_cost': holding.avgcost or 0,
+            'current_price': current_price,
+            'cost_basis': cost_basis,
+            'current_value': current_value,
+            'gain_loss': gain_loss,
+            'gain_loss_percent': gain_loss_percent
+        })
+    
+    total_gain_loss = total_current_value - total_cost_basis
+    total_gain_loss_percent = (total_gain_loss / total_cost_basis * 100) if total_cost_basis > 0 else 0
+    
+    return {
+        'portfolio_name': pname,
+        'total_cost_basis': total_cost_basis,
+        'total_current_value': total_current_value,
+        'total_gain_loss': total_gain_loss,
+        'total_gain_loss_percent': total_gain_loss_percent,
+        'holdings': holdings_analytics,
+        'num_holdings': len(holdings_analytics)
+    }
 
 @app.get('/user/me')
 def me(username: str = Depends(require_auth), db: Session = Depends(get_db)):
@@ -469,6 +793,9 @@ def create_portfolio(data: dict, username: str = Depends(require_auth), db: Sess
     user.active_portfolio = name
     db.commit()
     logging.info('Created portfolio %s for user %s', name, username)
+    # Audit log portfolio creation
+    log_audit(db, user_id=user.id, action='create_portfolio', resource='portfolio',
+              details=f'Portfolio: {name}', status='success', username=username)
     return {'message': 'Portfolio created', 'active': name}
 
 @app.post('/portfolio/select')
@@ -498,6 +825,7 @@ def get_portfolio(name: str = None, username: str = Depends(require_auth), db: S
             'curprice': str(h.curprice) if h.curprice is not None else '',
             'lasttransactiondate': h.lasttransactiondate or '',
         })
+    rows = filter_zero_holdings(rows)
     attach_ticker_names(rows, db)
     try:
         sorted_port = sorted(rows, key=lambda r: __import__('pandas').to_datetime(r.get('lasttransactiondate')), reverse=True)
@@ -525,16 +853,24 @@ def reset_portfolio(username: str = Depends(require_auth), db: Session = Depends
 
 
 @app.post("/portfolio/load")
-def load_portfolio(file: UploadFile = File(...), name: str = None, username: str = Depends(require_auth), db: Session = Depends(get_db)):
+async def load_portfolio(file: UploadFile = File(...), name: str = None, username: str = Depends(require_auth), db: Session = Depends(get_db)):
     logging.info("Load request: %s for user %s", file.filename, username)
     if not file.filename.lower().endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")
     try:
-        content = file.file.read().decode('utf-8')
+        # Read file contents with size validation
+        content_bytes = await file.read()
+        if len(content_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413, 
+                detail=f'File too large. Maximum size: {MAX_UPLOAD_SIZE_BYTES / (1024 * 1024):.1f}MB'
+            )
+        content = content_bytes.decode('utf-8')
         reader = csv.DictReader(io.StringIO(content))
         rows = []
         for row in reader:
             rows.append(row)
+        rows = filter_zero_holdings(rows)
         pname = name or db.query(models.User).filter(models.User.username == username).first().active_portfolio or 'default'
         user = db.query(models.User).filter(models.User.username == username).first()
         portfolio = next((p for p in user.portfolios if p.name == pname), None)
@@ -571,11 +907,14 @@ def save_portfolio(data: dict, username: str = Depends(require_auth), db: Sessio
     rows = []
     for h in portfolio.holdings:
         rows.append({'symbol': h.symbol, 'quantity': str(h.quantity), 'avgcost': str(h.avgcost) if h.avgcost is not None else '', 'curprice': str(h.curprice) if h.curprice is not None else '', 'lasttransactiondate': h.lasttransactiondate or ''})
+    rows = filter_zero_holdings(rows)
     # save file under username prefix to avoid collisions
     safe_filename = f"{username}_{filename}"
     full_path = os.path.join(os.path.dirname(__file__), safe_filename)
     logging.info("Saving to: %s", full_path)
     try:
+        if not rows:
+            raise HTTPException(status_code=400, detail='No holdings to save')
         logging.info("Saving portfolio %s with %d records for user %s", pname, len(rows), username)
         message = write_portfolio(rows, full_path)
         logging.info("Save result: %s", message)
@@ -605,11 +944,14 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
         if cached_price is None:
             raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
         new_rows, message = buy_ticker(rows, symbol, str(quantity), price=cached_price)
+        new_rows = filter_zero_holdings(new_rows)
         # replace holdings
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
             qty_val = float(r.get('quantity') or 0)
+            if qty_val <= 0:
+                continue
             totalcost_val = r.get('totalcost')
             avgcost_val = r.get('avgcost')
             if (avgcost_val is None or avgcost_val == '') and qty_val:
@@ -633,6 +975,23 @@ def buy(data: dict, username: str = Depends(require_auth), db: Session = Depends
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Buy completed for %s: %s', username, message)
+        
+        # Record transaction
+        transaction = models.Transaction(
+            user_id=user.id,
+            portfolio_id=portfolio.id,
+            symbol=symbol,
+            transaction_type='buy',
+            quantity=float(quantity),
+            price=cached_price,
+            total_amount=float(quantity) * cached_price
+        )
+        db.add(transaction)
+        db.commit()
+        
+        # Audit log successful buy operation
+        log_audit(db, user_id=user.id, action='buy', resource='holding', 
+                  details=f'{symbol} x {quantity}', status='success', username=username)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
         logging.error("Buy error: %s", e)
@@ -666,10 +1025,13 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
         if cached_price is None:
             raise HTTPException(status_code=400, detail=f"Unable to fetch price for {symbol}")
         new_rows, message = sell_ticker(rows, symbol, str(quantity), price=cached_price)
+        new_rows = filter_zero_holdings(new_rows)
         db.query(models.Holding).filter(models.Holding.portfolio_id == portfolio.id).delete()
         for r in new_rows:
             sym = r.get('ticker') or r.get('symbol') or ''
             qty_val = float(r.get('quantity') or 0)
+            if qty_val <= 0:
+                continue
             totalcost_val = r.get('totalcost')
             avgcost_val = r.get('avgcost')
             if (avgcost_val is None or avgcost_val == '') and qty_val:
@@ -692,6 +1054,23 @@ def sell(data: dict, username: str = Depends(require_auth), db: Session = Depend
                 r['symbol'] = r['ticker']
         attach_ticker_names(new_rows, db, force_refresh=True)
         logging.info('Sell completed for %s: %s', username, message)
+        
+        # Record transaction
+        transaction = models.Transaction(
+            user_id=user.id,
+            portfolio_id=portfolio.id,
+            symbol=symbol,
+            transaction_type='sell',
+            quantity=float(quantity),
+            price=cached_price,
+            total_amount=float(quantity) * cached_price
+        )
+        db.add(transaction)
+        db.commit()
+        
+        # Audit log successful sell operation
+        log_audit(db, user_id=user.id, action='sell', resource='holding',
+                  details=f'{symbol} x {quantity}', status='success', username=username)
         return {"message": message, "portfolio": new_rows, 'name': pname}
     except Exception as e:
         logging.error("Sell error: %s", e)

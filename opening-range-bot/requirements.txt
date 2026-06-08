@@ -1,0 +1,6 @@
+pandas>=2.0
+requests>=2.30
+streamlit>=1.25
+plotly>=5.20
+pytz>=2024.1
+urllib3>=1.26

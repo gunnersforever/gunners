@@ -1,0 +1,20 @@
+<config>
+  <strategy>
+    <opening_range_minutes>15</opening_range_minutes>
+    <max_tickers>10</max_tickers>
+    <quote_max_spread_bps>10.0</quote_max_spread_bps>
+  </strategy>
+  <api>
+    <base_url>https://finnhub.io/api/v1</base_url>
+    <api_key>YOUR_FINNHUB_API_KEY</api_key>
+  </api>
+  <tickers>
+    <ticker symbol="AAPL" />
+    <ticker symbol="MSFT" />
+    <ticker symbol="GOOG" />
+    <ticker symbol="AMZN" />
+  </tickers>
+  <cache>
+    <data_cache_dir>data</data_cache_dir>
+  </cache>
+</config>
